@@ -19,5 +19,12 @@ AGENTS.md
 # Experimental code/artifacts
 dev/
 
-# Results file
+# Results and runtime data
 results.tsv
+results.jsonl
+results_*.jsonl
+stage2_seeds/
+*.sqlite
+
+# AWS state
+/tmp/hbt_autoresearch/

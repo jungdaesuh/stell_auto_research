@@ -164,13 +164,13 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 | `--num-tf-coils` | 20 | TF coil count |
 | `--stage2-bs-path` | (auto) | Explicit Stage 2 seed path (usually auto-resolved) |
 
-**Execution:**
+**Execution (also applies to single-stage `--timeout`):**
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--omp-threads` | 10 | CPU threads |
 | `--timeout` | 600 | Use 1200+ for single-stage |
 
-**Parallel runs**: You can run multiple experiments concurrently. `run_one.py` auto-detects concurrent instances and reduces threads per run to share the 14 CPU cores fairly. No manual `--omp-threads` adjustment needed. However, be aware that parallel single-stage runs (10+ min each) will be slower per-run than serial. For single-stage, prefer running one at a time for best results.
+**Parallel runs**: You can run multiple experiments concurrently. `run_one.py` auto-detects concurrent instances and reduces threads per run to share the 10 allocated CPU cores fairly. No manual `--omp-threads` adjustment needed. However, be aware that parallel single-stage runs (10+ min each) will be slower per-run than serial. For single-stage, prefer running one at a time for best results.
 
 **Single-stage crash note**: If single-stage crashes with "surface goes back on itself", the Stage 2 seed coil produces an invalid Boozer surface. This is a geometry issue with the seed, not the single-stage weights. Try a different seed (different Stage 2 params or a different equilibrium).
 
@@ -182,28 +182,25 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 
 **SELF_INTERSECTING = True → always discard.**
 
+**Hardware limits (enforced in the solver code, cannot be overridden):**
+- `cc_threshold` / `cc_dist` >= 0.05m (5cm minimum coil-coil spacing)
+- `curvature_threshold` >= 20 (minimum curvature limit)
+- `length_target` >= 1.75m (maximum coil length)
+- `cs_dist` >= 0.02m (2cm minimum coil-to-surface clearance, single-stage only)
+- `ss_dist` >= 0.04m (4cm minimum surface-to-vessel clearance, single-stage only)
+
+All five are clamped via `max()` in the solver files themselves. Even if you pass values below these, the solver uses the minimums. You can freely adjust weights (cc_weight, curvature_weight, length_weight, cs_weight, surf_dist_weight) to change how hard the optimizer pushes against these limits, but the limits themselves are fixed.
+
 ## Prior Results
 
-Read `results.jsonl` and `results.tsv` for full details. Here is a summary of what has been tried and what hasn't. Treat this as a starting point, not a constraint — every finding below was made under specific conditions and may not generalize.
-
-**What has been explored (Stage 2 only, mostly iota15):**
-- Weight sensitivity around order=2 and order=3 for iota15
-- A few runs on iota20 and 001490 transferring iota15 settings
-- Basin non-determinism: same params produce different results due to L-BFGS-B noise sensitivity
-
-**What has NOT been explored:**
-- Single-stage solver (10 attempts, all crashed on Boozer init — needs debugging)
-- Systematic weight exploration for iota20 and 001490 (only a handful of runs each)
-- Different equilibria may have completely different optimal weight regions
-- Single-stage weight space (res_weight, iotas_weight, surf_dist_weight) — never tuned
-- Higher order (4, 5) for any equilibrium
-- Cross-solver validation (does a good Stage 2 coil produce good QS fields?)
-- Whether iota15 insights transfer to other equilibria or are coincidental
+Read `results.jsonl` and `results.tsv` for full details. These contain 150+ runs across both solvers and all equilibria. Treat findings as starting points, not constraints — every result was made under specific conditions and may not generalize.
 
 **Operational notes:**
 - Single-stage needs `nphi=127 ntheta=32` minimum (lower crashes Boozer init) and `--timeout 1200`+
+- Single-stage has a Boozer init pre-check that catches crashes in seconds. ~44% of single-stage runs pass.
 - Basin non-determinism: at order=3, the same params can produce very different results. Don't assume one run is representative.
-- 001490 self-intersects at CT=20 with the same params that work for iota15 — each equilibrium needs its own exploration
+- 001490 Boozer surface crashes in single-stage — geometry incompatible with current seeds.
+- Each equilibrium needs its own exploration — weight optima don't transfer directly.
 
 ## Logging Results
 

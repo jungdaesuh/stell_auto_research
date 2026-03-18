@@ -2,7 +2,7 @@
 """AWS EC2 runner for HBT autoresearch — launch, batch dispatch, stop.
 
 Usage:
-    # Launch a c7i.16xlarge instance (64 vCPU)
+    # Launch an EC2 instance
     python scripts/aws_run.py launch
 
     # Run a single experiment remotely
@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -57,7 +58,7 @@ STATE_FILE = Path("/tmp/hbt_autoresearch/aws_instance.json")
 COST_PER_HOUR = 0.69  # c5ad.4xlarge on-demand
 COST_LIMIT = 10.0  # Auto-stop after this many dollars
 
-# Parallel config: 8 threads per run on 64 vCPU = 8 parallel runs
+# Parallel config: 8 threads per run on 16 vCPU (c5ad.4xlarge) = 2 parallel runs
 THREADS_PER_RUN = 8
 MAX_PARALLEL = 2
 
@@ -72,8 +73,8 @@ def aws(*args: str) -> str:
     return result.stdout.strip()
 
 
-def ssh(ip: str, command: str, timeout: int = 600) -> str:
-    """Run a command on the remote instance via SSH."""
+def ssh(ip: str, command: str, timeout: int = 600) -> tuple[str, str, int]:
+    """Run a command on the remote instance via SSH. Returns (stdout, stderr, returncode)."""
     cmd = [
         "ssh",
         "-i",
@@ -86,7 +87,7 @@ def ssh(ip: str, command: str, timeout: int = 600) -> str:
         command,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    return result.stdout.strip()
+    return result.stdout.strip(), result.stderr.strip(), result.returncode
 
 
 def load_state() -> dict | None:
@@ -221,7 +222,7 @@ def cmd_launch(args: list[str]) -> None:
     print("Waiting for SSH...", end="", flush=True)
     for _ in range(30):
         try:
-            out = ssh(ip, "echo ok", timeout=10)
+            out, _, _ = ssh(ip, "echo ok", timeout=10)
             if "ok" in out:
                 break
         except (subprocess.TimeoutExpired, subprocess.SubprocessError):
@@ -314,6 +315,81 @@ def cmd_batch(args: list[str]) -> None:
         print(f"    {result}")
 
 
+_JSONL_THREAD_LOCK = __import__("threading").Lock()
+
+EQ_MAP = {
+    "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
+    "iota20": "wout_nfp22ginsburg_000_002084_iota20.nc",
+    "001490": "wout_nfp22ginsburg_000_001490.nc",
+}
+
+# Args consumed by _run_remote, not forwarded to the solver
+_META_ARGS = {"--solver", "--equilibrium", "--timeout"}
+
+_SAFE_ARG_PATTERN = re.compile(r"^[a-zA-Z0-9._/=\-]+$")
+
+
+def _parse_and_sanitize(extra_args: str) -> tuple[str, str, str, int, str]:
+    """Parse meta-args from extra_args. Return (solver, equilibrium, plasma_surf, ssh_timeout, clean_args).
+
+    Strips --solver, --equilibrium, --timeout from args before forwarding.
+    Validates remaining args against shell injection.
+    """
+    parts = extra_args.split()
+    solver = "stage2"
+    equilibrium = "iota15"
+    timeout_val = 0
+    clean_parts: list[str] = []
+    skip_next = False
+
+    for i, token in enumerate(parts):
+        if skip_next:
+            skip_next = False
+            continue
+        # Handle --flag=value
+        if "=" in token:
+            flag = token.split("=", 1)[0]
+            val = token.split("=", 1)[1]
+            if flag == "--solver":
+                solver = val
+                continue
+            elif flag == "--equilibrium":
+                equilibrium = val
+                continue
+            elif flag == "--timeout":
+                timeout_val = int(val)
+                continue
+        # Handle --flag value
+        elif token in _META_ARGS and i + 1 < len(parts):
+            if token == "--solver":
+                solver = parts[i + 1]
+            elif token == "--equilibrium":
+                equilibrium = parts[i + 1]
+            elif token == "--timeout":
+                timeout_val = int(parts[i + 1])
+            skip_next = True
+            continue
+
+        clean_parts.append(token)
+
+    # Sanitize: reject args with shell metacharacters
+    for part in clean_parts:
+        if not _SAFE_ARG_PATTERN.match(part):
+            raise ValueError(
+                f"Unsafe argument rejected (shell metacharacter): {part!r}"
+            )
+
+    plasma_surf = EQ_MAP.get(equilibrium, equilibrium)
+    ssh_timeout = (
+        timeout_val + 120
+        if timeout_val > 0
+        else (2400 if solver == "single-stage" else 600)
+    )
+    clean_args = " ".join(clean_parts)
+
+    return solver, equilibrium, plasma_surf, ssh_timeout, clean_args
+
+
 def _run_remote(ip: str, extra_args: str) -> str:
     """Run one experiment on the remote instance. Returns JSON string.
 
@@ -322,34 +398,49 @@ def _run_remote(ip: str, extra_args: str) -> str:
     from scripts.run_one import score_stage2, score_single_stage, _append_jsonl  # noqa: E402
 
     import argparse
+    import random
 
-    # Parse --solver and --equilibrium from the args
-    solver = "stage2"
-    if "--solver single-stage" in extra_args or "--solver=single-stage" in extra_args:
-        solver = "single-stage"
-
-    equilibrium = "iota15"
-    for token in extra_args.split():
-        if token.startswith("--equilibrium"):
-            if "=" in token:
-                equilibrium = token.split("=", 1)[1]
-    parts = extra_args.split()
-    for i, p in enumerate(parts):
-        if p == "--equilibrium" and i + 1 < len(parts):
-            equilibrium = parts[i + 1]
-
+    solver, equilibrium, plasma_surf, ssh_timeout, clean_args = _parse_and_sanitize(
+        extra_args
+    )
     remote_solver = REMOTE_SOLVER_STAGE2 if solver == "stage2" else REMOTE_SOLVER_SS
 
-    # Resolve equilibrium → plasma surf filename
-    eq_map = {
-        "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
-        "iota20": "wout_nfp22ginsburg_000_002084_iota20.nc",
-        "001490": "wout_nfp22ginsburg_000_001490.nc",
-    }
-    plasma_surf = eq_map.get(equilibrium, equilibrium)
-
-    # Unique run ID using pid + time to avoid collisions across parallel SSH sessions
-    import random
+    # Pre-check: for single-stage, run --init-only first to catch Boozer init failures (seconds vs 10-30 min)
+    if solver == "single-stage":
+        precheck_id = (
+            f"precheck_{int(time.time() * 1000)}_{random.randint(10000, 99999)}"
+        )
+        precheck_cmd = (
+            f"export OMP_NUM_THREADS={THREADS_PER_RUN} && "
+            f"mkdir -p /tmp/{precheck_id} && "
+            f"{REMOTE_VENV} {remote_solver} "
+            f"--equilibria-dir {REMOTE_EQUILIBRIA} "
+            f"--plasma-surf-filename {plasma_surf} "
+            f"--output-root /tmp/{precheck_id} "
+            f"--init-only {clean_args} "
+            f"> /tmp/{precheck_id}/precheck.log 2>&1; "
+            f"echo EXIT:$?; "
+            f"tail -5 /tmp/{precheck_id}/precheck.log 2>/dev/null; "
+            f"rm -rf /tmp/{precheck_id}"
+        )
+        pre_out, pre_err, pre_rc = ssh(ip, precheck_cmd, timeout=120)
+        if "EXIT:0" not in pre_out:
+            feedback = "REMOTE BOOZER PRE-CHECK FAILED (saved ~10-30 min). "
+            if "goes back" in pre_out or "self_intersecting" in pre_out.lower():
+                feedback += "Surface folds — seed incompatible. Try a different seed."
+            else:
+                feedback += pre_out[-300:]
+            error_output = {
+                "source": "aws",
+                "solver": solver,
+                "equilibrium": equilibrium,
+                "status": "crash",
+                "score": 0.0,
+                "feedback": feedback,
+            }
+            with _JSONL_THREAD_LOCK:
+                _append_jsonl(error_output)
+            return json.dumps(error_output)
 
     run_id = f"run_{int(time.time() * 1000)}_{random.randint(10000, 99999)}"
     remote_cmd = (
@@ -361,24 +452,18 @@ def _run_remote(ip: str, extra_args: str) -> str:
         f"--equilibria-dir {REMOTE_EQUILIBRIA} "
         f"--plasma-surf-filename {plasma_surf} "
         f"--output-root /tmp/{run_id} "
-        f"{extra_args} "
+        f"{clean_args} "
         f"> /tmp/{run_id}/run.log 2>&1; "
         f"cat $(find /tmp/{run_id} -name results.json -type f | head -1) 2>/dev/null; "
         f"rm -rf /tmp/{run_id}"
     )
 
-    # Parse --timeout from extra_args, default 600 for stage2, 2400 for single-stage
-    ssh_timeout = 2400 if solver == "single-stage" else 600
-    for i, token in enumerate(extra_args.split()):
-        if token == "--timeout" and i + 1 < len(extra_args.split()):
-            ssh_timeout = (
-                int(extra_args.split()[i + 1]) + 120
-            )  # solver timeout + buffer
-
     t0 = time.monotonic()
     try:
-        raw = ssh(ip, remote_cmd, timeout=ssh_timeout)
+        raw, stderr, rc = ssh(ip, remote_cmd, timeout=ssh_timeout)
         elapsed = time.monotonic() - t0
+        if rc != 0 and not raw:
+            raw = stderr  # Use stderr for error diagnostics
 
         # Parse the JSON from output (results.json content, may be multi-line)
         # Use json.JSONDecoder to find the first valid JSON object, ignoring SSH noise
@@ -444,7 +529,8 @@ def _run_remote(ip: str, extra_args: str) -> str:
                     output["target_iota"] = metrics.get("TARGET_IOTA")
                     output["target_volume"] = metrics.get("TARGET_VOLUME")
 
-                _append_jsonl(output)
+                with _JSONL_THREAD_LOCK:
+                    _append_jsonl(output)
                 return json.dumps(output)
 
         error_output: dict = {
@@ -455,7 +541,8 @@ def _run_remote(ip: str, extra_args: str) -> str:
             "score": 0.0,
             "feedback": f"no JSON in output: {raw[-200:]}",
         }
-        _append_jsonl(error_output)
+        with _JSONL_THREAD_LOCK:
+            _append_jsonl(error_output)
         return json.dumps(error_output)
     except subprocess.TimeoutExpired:
         error_output = {
@@ -466,7 +553,8 @@ def _run_remote(ip: str, extra_args: str) -> str:
             "score": 0.0,
             "feedback": "timeout",
         }
-        _append_jsonl(error_output)
+        with _JSONL_THREAD_LOCK:
+            _append_jsonl(error_output)
         return json.dumps(error_output)
     except Exception as exc:
         error_output = {
@@ -477,7 +565,8 @@ def _run_remote(ip: str, extra_args: str) -> str:
             "score": 0.0,
             "feedback": str(exc),
         }
-        _append_jsonl(error_output)
+        with _JSONL_THREAD_LOCK:
+            _append_jsonl(error_output)
         return json.dumps(error_output)
 
 

@@ -258,15 +258,11 @@ def main() -> None:
     parser.add_argument("--num-tf-coils", type=int, default=20)
     # Stage 2 seed for single-stage
     parser.add_argument(
-        "--stage2-source", choices=["database", "local"], default="database"
-    )
-    parser.add_argument(
         "--stage2-bs-path",
         type=str,
         default=None,
         help="Explicit path to biot_savart_opt.json. Recommended: use stage2_seed_path from a Stage 2 run's JSON output.",
     )
-    parser.add_argument("--database-stage2-root", type=str, default=None)
 
     # --- Execution ---
     parser.add_argument("--omp-threads", type=int, default=10)
@@ -286,6 +282,20 @@ def main() -> None:
                 f"Auto-reduced to {threads_per_run} threads ({concurrent + 1} concurrent runs on {total_cores} cores).",
                 file=sys.stderr,
             )
+
+    try:
+        _run_experiment(args)
+    finally:
+        own_lock = OUTPUT_BASE / ".locks" / f"{os.getpid()}.lock"
+        own_lock.unlink(missing_ok=True)
+
+
+def _run_experiment(args: argparse.Namespace) -> None:
+    """Core experiment logic, separated so main() can wrap with try/finally for lockfile cleanup.
+
+    Hardware constraint minimums (cc_threshold >= 0.05, curvature_threshold >= 20,
+    length_target >= 1.75) are enforced in the solver code itself, not here.
+    """
 
     # Resolve solver and equilibrium
     solver_script = SOLVERS[args.solver]
@@ -462,10 +472,6 @@ def main() -> None:
     print(json.dumps(output))
     _append_jsonl(output)
 
-    # Clean up process lockfile
-    own_lock = OUTPUT_BASE / ".locks" / f"{os.getpid()}.lock"
-    own_lock.unlink(missing_ok=True)
-
 
 COLUMBIA_DATABASE = Path(
     "/Users/suhjungdae/code/columbia/DATABASE/COIL_OPTIMIZATION/outputs"
@@ -516,6 +522,13 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
                     and abs(
                         seed_meta.get("CURVATURE_WEIGHT", 0) - args.curvature_weight
                     )
+                    < 1e-7
+                    and abs(
+                        seed_meta.get("CC_THRESHOLD", 0.05)
+                        - getattr(args, "cc_threshold", 0.05)
+                    )
+                    < 0.001
+                    and abs(seed_meta.get("LENGTH_WEIGHT", 0.0005) - args.length_weight)
                     < 1e-7
                     and seed_meta.get("order", 0) == args.order
                     and abs(
