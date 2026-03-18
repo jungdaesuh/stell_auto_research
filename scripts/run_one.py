@@ -36,6 +36,7 @@ PYTHON = "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python"
 SIMSOPT_ROOT = Path("/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed")
 EQUILIBRIA = Path("/Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA")
 OUTPUT_BASE = Path("/tmp/hbt_autoresearch")
+STAGE2_SEED_STORE = REPO_ROOT / "stage2_seeds"
 
 SOLVERS = {
     "stage2": SIMSOPT_ROOT
@@ -105,6 +106,29 @@ def score_single_stage(metrics: dict, args: argparse.Namespace) -> float:
         penalty += 5.0
 
     return 1.0 / (1.0 + penalty)
+
+
+def _count_concurrent_runs() -> int:
+    """Count other run_one.py processes currently running (excluding this one).
+
+    Uses /tmp lockfiles instead of pgrep to avoid false matches from editors/grep.
+    """
+    lock_dir = OUTPUT_BASE / ".locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    own_lock = lock_dir / f"{os.getpid()}.lock"
+    own_lock.write_text(str(os.getpid()))
+    # Count other lockfiles whose PIDs are still alive
+    count = 0
+    for lock_file in lock_dir.glob("*.lock"):
+        try:
+            pid = int(lock_file.read_text().strip())
+            if pid == os.getpid():
+                continue
+            os.kill(pid, 0)  # Check if process exists (signal 0 = no-op)
+            count += 1
+        except (ValueError, ProcessLookupError, PermissionError, OSError):
+            lock_file.unlink(missing_ok=True)  # Stale lock, clean up
+    return count
 
 
 def main() -> None:
@@ -232,11 +256,16 @@ def main() -> None:
         "--boozer-stage", choices=["initial", "final"], default="initial"
     )
     parser.add_argument("--num-tf-coils", type=int, default=20)
-    # Stage 2 seed params for single-stage
+    # Stage 2 seed for single-stage
     parser.add_argument(
         "--stage2-source", choices=["database", "local"], default="database"
     )
-    parser.add_argument("--stage2-bs-path", type=str, default=None)
+    parser.add_argument(
+        "--stage2-bs-path",
+        type=str,
+        default=None,
+        help="Explicit path to biot_savart_opt.json. Recommended: use stage2_seed_path from a Stage 2 run's JSON output.",
+    )
     parser.add_argument("--database-stage2-root", type=str, default=None)
 
     # --- Execution ---
@@ -245,12 +274,72 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Auto-manage threads: count concurrent run_one.py processes, divide cores fairly.
+    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
+    concurrent = _count_concurrent_runs()
+    if concurrent > 0:
+        total_cores = 10  # Reserve 4 cores for system + other work
+        threads_per_run = max(2, total_cores // (concurrent + 1))
+        if args.omp_threads > threads_per_run:
+            args.omp_threads = threads_per_run
+            print(
+                f"Auto-reduced to {threads_per_run} threads ({concurrent + 1} concurrent runs on {total_cores} cores).",
+                file=sys.stderr,
+            )
+
     # Resolve solver and equilibrium
     solver_script = SOLVERS[args.solver]
     plasma_surf = EQUILIBRIUM_FILES.get(args.equilibrium, args.equilibrium)
 
     # Build CLI args for the solver
     cli_args = _build_cli_args(args, plasma_surf)
+    if not cli_args:
+        _emit_error("failed to resolve Stage 2 seed for single-stage", 0.0, args)
+        return
+
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = str(args.omp_threads)
+    env["MKL_NUM_THREADS"] = str(args.omp_threads)
+    env["OPENBLAS_NUM_THREADS"] = str(args.omp_threads)
+
+    # Single-stage pre-check: run --init-only first (seconds) to verify Boozer init works.
+    # Saves 10-30 minutes on runs that would crash during init.
+    if args.solver == "single-stage":
+        precheck_dir = OUTPUT_BASE / f"precheck_{int(time.time() * 1000)}"
+        precheck_dir.mkdir(parents=True, exist_ok=True)
+        precheck_args = cli_args + ["--init-only", "--output-root", str(precheck_dir)]
+        precheck_cmd = [PYTHON, str(solver_script)] + precheck_args
+        precheck_log = precheck_dir / "precheck.log"
+        try:
+            with open(precheck_log, "w") as lf:
+                precheck = subprocess.run(
+                    precheck_cmd,
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=120,
+                )
+            if precheck.returncode != 0:
+                tail = ""
+                if precheck_log.exists():
+                    tail = "\n".join(precheck_log.read_text().splitlines()[-15:])
+                feedback = "BOOZER INIT PRE-CHECK FAILED (saved ~10-30 min). "
+                if "goes back" in tail:
+                    feedback += "Surface folds back on itself — seed geometry incompatible. Try a different seed."
+                elif "self_intersecting" in tail.lower() or "Self-intersecting" in tail:
+                    feedback += "Boozer surface self-intersects. Try a different seed."
+                else:
+                    feedback += f"Run dir: {precheck_dir}\n{tail[:500]}"
+                _emit_error(feedback, 0.0, args)
+                shutil.rmtree(precheck_dir, ignore_errors=True)
+                return
+        except subprocess.TimeoutExpired:
+            _emit_error("Boozer init pre-check timed out after 120s", 0.0, args)
+            shutil.rmtree(precheck_dir, ignore_errors=True)
+            return
+        finally:
+            shutil.rmtree(precheck_dir, ignore_errors=True)
+        print("Boozer init pre-check passed.", file=sys.stderr)
 
     # Unique output dir
     run_id = f"run_{int(time.time() * 1000)}"
@@ -259,11 +348,6 @@ def main() -> None:
     cli_args.extend(["--output-root", str(run_dir)])
 
     cmd = [PYTHON, str(solver_script)] + cli_args
-
-    env = os.environ.copy()
-    env["OMP_NUM_THREADS"] = str(args.omp_threads)
-    env["MKL_NUM_THREADS"] = str(args.omp_threads)
-    env["OPENBLAS_NUM_THREADS"] = str(args.omp_threads)
 
     log_path = run_dir / "run.log"
     t0 = time.monotonic()
@@ -290,8 +374,17 @@ def main() -> None:
     if returncode != 0:
         tail = ""
         if log_path.exists():
-            tail = "\n".join(log_path.read_text().splitlines()[-10:])
-        _emit_error(f"exit code {returncode}: {tail[:300]}", elapsed, args)
+            tail = "\n".join(log_path.read_text().splitlines()[-30:])
+        # Detect the common Boozer surface crash for single-stage
+        feedback = f"exit code {returncode}. Run dir: {run_dir}\n{tail[:1000]}"
+        if "goes back" in tail and args.solver == "single-stage":
+            feedback = (
+                f"BOOZER SURFACE CRASH: The Stage 2 seed produces a surface that folds back on itself. "
+                f"This is a geometry issue with the seed coil, not the single-stage weights. "
+                f"Try a different seed (different Stage 2 params or equilibrium). "
+                f"Run dir: {run_dir}"
+            )
+        _emit_error(feedback, elapsed, args)
         return
 
     # Parse results.json
@@ -310,15 +403,17 @@ def main() -> None:
         score = score_single_stage(metrics, args)
 
     output = {
+        "source": "local",
         "solver": args.solver,
         "equilibrium": args.equilibrium,
         "status": "fail" if metrics.get("SELF_INTERSECTING", False) else "pass",
+        "score": round(score, 6),
         "field_error": metrics.get("FIELD_ERROR"),
         "self_intersecting": metrics.get("SELF_INTERSECTING", False),
         "max_curvature": metrics.get("MAX_CURVATURE"),
-        "score": round(score, 6),
         "iterations": metrics.get("iterations"),
         "elapsed": round(elapsed, 1),
+        "params": _extract_params(args),
     }
 
     # Single-stage extra fields
@@ -328,8 +423,158 @@ def main() -> None:
         output["target_iota"] = metrics.get("TARGET_IOTA")
         output["target_volume"] = metrics.get("TARGET_VOLUME")
 
+    # For Stage 2: persist biot_savart_opt.json so single-stage can use it as a seed
+    # Only overwrite if the new result has lower field error than the existing seed
+    if args.solver == "stage2":
+        bs_files = list(run_dir.rglob("biot_savart_opt.json"))
+        if bs_files:
+            seed_dir = (
+                STAGE2_SEED_STORE / f"outputs-{plasma_surf}" / bs_files[0].parent.name
+            )
+            existing_results = seed_dir / "results.json"
+            new_fe = metrics.get("FIELD_ERROR", 999.0)
+            if isinstance(new_fe, float) and math.isnan(new_fe):
+                new_fe = 999.0
+            should_write = True
+            if existing_results.is_file():
+                with open(existing_results) as f:
+                    old = json.load(f)
+                old_fe = old.get("FIELD_ERROR", 999.0)
+                if isinstance(old_fe, float) and math.isnan(old_fe):
+                    old_fe = 999.0
+                if new_fe >= old_fe:
+                    should_write = False
+
+            if should_write:
+                seed_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(bs_files[0], seed_dir / "biot_savart_opt.json")
+                if results_files:
+                    shutil.copy2(results_files[0], seed_dir / "results.json")
+
+            output["stage2_seed_path"] = str(seed_dir / "biot_savart_opt.json")
+
+    # Keep crash logs for debugging, clean up successful runs
+    if output.get("status") in ("crash", "fail"):
+        output["run_dir"] = str(run_dir)
+    else:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
     print(json.dumps(output))
-    shutil.rmtree(run_dir, ignore_errors=True)
+    _append_jsonl(output)
+
+    # Clean up process lockfile
+    own_lock = OUTPUT_BASE / ".locks" / f"{os.getpid()}.lock"
+    own_lock.unlink(missing_ok=True)
+
+
+COLUMBIA_DATABASE = Path(
+    "/Users/suhjungdae/code/columbia/DATABASE/COIL_OPTIMIZATION/outputs"
+)
+
+
+def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | None:
+    """Find a Stage 2 biot_savart_opt.json matching the seed params.
+
+    Searches: explicit --stage2-bs-path, then stage2_seeds/, then Columbia DATABASE.
+    If no seed exists, runs Stage 2 automatically and returns the new seed path.
+    """
+    if args.stage2_bs_path:
+        if Path(args.stage2_bs_path).is_file():
+            return args.stage2_bs_path
+        print(
+            json.dumps(
+                {
+                    "status": "crash",
+                    "score": 0.0,
+                    "feedback": f"stage2-bs-path not found: {args.stage2_bs_path}",
+                }
+            ),
+        )
+        return None
+
+    plasma_dir = f"outputs-{plasma_surf}"
+
+    # Search stage2_seeds/ (autoresearch runs) — solver uses R0/s/CCT/CT format
+    for search_root in [STAGE2_SEED_STORE, COLUMBIA_DATABASE]:
+        seeds_parent = search_root / plasma_dir
+        if not seeds_parent.is_dir():
+            continue
+        for seed_dir in seeds_parent.iterdir():
+            bs_file = seed_dir / "biot_savart_opt.json"
+            results_file = seed_dir / "results.json"
+            if not bs_file.is_file():
+                continue
+            # Match by checking results.json params
+            if results_file.is_file():
+                with open(results_file) as f:
+                    seed_meta = json.load(f)
+                if (
+                    abs(seed_meta.get("MAJOR_RADIUS", 0) - args.major_radius) < 0.001
+                    and abs(seed_meta.get("TOROIDAL_FLUX", 0) - args.toroidal_flux)
+                    < 0.001
+                    and abs(seed_meta.get("CC_WEIGHT", 0) - args.cc_weight) < 0.1
+                    and abs(
+                        seed_meta.get("CURVATURE_WEIGHT", 0) - args.curvature_weight
+                    )
+                    < 1e-7
+                    and seed_meta.get("order", 0) == args.order
+                    and abs(
+                        seed_meta.get("banana_surf_radius", 0) - args.banana_surf_radius
+                    )
+                    < 0.001
+                ):
+                    return str(bs_file)
+
+    # No seed found — auto-run Stage 2 to generate one
+    print(
+        f"No Stage 2 seed found for MR={args.major_radius} CCW={args.cc_weight} Order={args.order}. Running Stage 2 first...",
+        file=sys.stderr,
+    )
+    stage2_cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--solver",
+        "stage2",
+        "--equilibrium",
+        args.equilibrium,
+        "--cc-weight",
+        str(args.cc_weight),
+        "--curvature-weight",
+        str(args.curvature_weight),
+        "--curvature-threshold",
+        str(args.curvature_threshold),
+        "--banana-surf-radius",
+        str(args.banana_surf_radius),
+        "--major-radius",
+        str(args.major_radius),
+        "--toroidal-flux",
+        str(args.toroidal_flux),
+        "--order",
+        str(args.order),
+        "--length-weight",
+        str(args.length_weight),
+        "--cc-threshold",
+        str(getattr(args, "cc_threshold", 0.05)),
+        "--maxiter",
+        "400",
+        "--omp-threads",
+        str(args.omp_threads),
+    ]
+    result = subprocess.run(stage2_cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        return None
+
+    # Parse the Stage 2 output for seed path
+    try:
+        stage2_output = json.loads(result.stdout.strip())
+        seed_path = stage2_output.get("stage2_seed_path")
+        if seed_path and Path(seed_path).is_file():
+            print(f"Stage 2 seed generated: {seed_path}", file=sys.stderr)
+            return seed_path
+    except json.JSONDecodeError:
+        pass
+
+    return None
 
 
 def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
@@ -353,16 +598,16 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
         str(args.curvature_threshold),
         "--banana-surf-radius",
         str(args.banana_surf_radius),
-        "--major-radius",
-        str(args.major_radius),
-        "--toroidal-flux",
-        str(args.toroidal_flux),
-        "--order",
-        str(args.order),
     ]
 
     if args.solver == "stage2":
         return common + [
+            "--major-radius",
+            str(args.major_radius),
+            "--toroidal-flux",
+            str(args.toroidal_flux),
+            "--order",
+            str(args.order),
             "--cc-threshold",
             str(args.cc_threshold),
             "--length-weight",
@@ -389,7 +634,14 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.num_quadpoints),
         ]
     else:
+        # Resolve Stage 2 seed — auto-searches stage2_seeds/, Columbia DATABASE, or runs Stage 2
+        seed_path = _resolve_stage2_seed(args, plasma_surf)
+        if seed_path is None:
+            return []  # Will be caught as empty args → crash
+
         cli = common + [
+            "--stage2-bs-path",
+            seed_path,
             "--cc-dist",
             str(args.cc_dist),
             "--iota-target",
@@ -422,30 +674,94 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.ss_dist),
             "--maxcor",
             str(args.maxcor),
-            "--stage2-source",
-            args.stage2_source,
         ]
-        if args.stage2_bs_path:
-            cli.extend(["--stage2-bs-path", args.stage2_bs_path])
-        if args.database_stage2_root:
-            cli.extend(["--database-stage2-root", args.database_stage2_root])
         return cli
+
+
+def _extract_params(args: argparse.Namespace) -> dict:
+    """Extract all physics input params from args into a flat dict."""
+    shared = {
+        "cc_weight": args.cc_weight,
+        "curvature_weight": args.curvature_weight,
+        "curvature_threshold": args.curvature_threshold,
+        "banana_surf_radius": args.banana_surf_radius,
+        "major_radius": args.major_radius,
+        "toroidal_flux": args.toroidal_flux,
+        "order": args.order,
+        "maxiter": args.maxiter,
+        "nphi": args.nphi,
+        "ntheta": args.ntheta,
+    }
+    if args.solver == "stage2":
+        shared.update(
+            {
+                "cc_threshold": args.cc_threshold,
+                "length_weight": args.length_weight,
+                "length_target": args.length_target,
+                "squared_flux_weight": args.squared_flux_weight,
+                "curvature_p_norm": args.curvature_p_norm,
+                "num_quadpoints": args.num_quadpoints,
+                "theta_center": args.theta_center,
+                "phi_center": args.phi_center,
+                "theta_width": args.theta_width,
+                "phi_width": args.phi_width,
+            }
+        )
+    else:
+        shared.update(
+            {
+                "iota_target": args.iota_target,
+                "vol_target": args.vol_target,
+                "mpol": args.mpol,
+                "ntor": args.ntor,
+                "cc_dist": args.cc_dist,
+                "constraint_weight": args.constraint_weight,
+                "res_weight": args.res_weight,
+                "iotas_weight": args.iotas_weight,
+                "cs_weight": args.cs_weight,
+                "cs_dist": args.cs_dist,
+                "surf_dist_weight": args.surf_dist_weight,
+                "ss_dist": args.ss_dist,
+                "ss_length_weight": args.ss_length_weight,
+                "maxcor": args.maxcor,
+                "boozer_stage": args.boozer_stage,
+            }
+        )
+    return shared
+
+
+JSONL_PATH = REPO_ROOT / "results.jsonl"
+
+
+def _append_jsonl(record: dict) -> None:
+    """Append one JSON record to results.jsonl. File-locked for concurrent access."""
+    import fcntl
+
+    line = json.dumps(record) + "\n"
+    with open(JSONL_PATH, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(line)
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _emit_error(reason: str, elapsed: float, args: argparse.Namespace) -> None:
     output = {
+        "source": "local",
         "solver": args.solver,
         "equilibrium": args.equilibrium,
         "status": "crash",
+        "score": 0.0,
         "field_error": None,
         "self_intersecting": None,
         "max_curvature": None,
-        "score": 0.0,
         "iterations": None,
         "elapsed": round(elapsed, 1),
         "feedback": reason,
+        "params": _extract_params(args),
     }
     print(json.dumps(output))
+    _append_jsonl(output)
 
 
 if __name__ == "__main__":

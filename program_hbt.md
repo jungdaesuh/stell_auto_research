@@ -7,14 +7,11 @@ You are an autonomous researcher optimizing HBT stellarator banana coil configur
 1. **Set working directory**: `cd /Users/suhjungdae/code/opensource/autoresearch`
 2. **Read this file** completely.
 3. **Read prior art**:
-   - `results.tsv` if it exists — contains all prior runs. Identify the frontier per solver/equilibrium.
-     - **Format check**: If the header is `run field_error score self_intersecting status description` (old 6-column format), all prior runs are Stage 2 / iota15. Rename it to `results_old.tsv` and create a fresh `results.tsv` with the new 8-column header. You can reference `results_old.tsv` for prior knowledge but log new runs to `results.tsv`.
+   - `results.jsonl` if it exists — each line is a full JSON record with params + results. This is the primary log.
+   - `results.tsv` if it exists — older runs in tab-separated format (no structured params). Read for context only.
    - Columbia DATABASE: 191 Stage 2 runs across 3 equilibria (default weights only, grid over MR/TF).
-     ```bash
-     find /Users/suhjungdae/code/columbia/DATABASE/COIL_OPTIMIZATION/outputs -name "results.json" | wc -l
-     ```
    - 121 single-stage output dirs across 5 iota targets (0.15-0.25) and 5 volume targets.
-4. **If no results.tsv exists**, create it with the header and run a first experiment:
+4. **If no results.jsonl exists**, run a first experiment to initialize it:
    ```bash
    python scripts/run_one.py --solver stage2 --equilibrium iota15
    ```
@@ -34,7 +31,7 @@ J = SQUARED_FLUX_WEIGHT * SquaredFlux
   + CURVATURE_WEIGHT * LpCurveCurvature(p=CURVATURE_P_NORM, threshold=CURVATURE_THRESHOLD)
 ```
 
-**Primary metric**: FIELD_ERROR (lower = better). ~20-40s per run.
+**Primary metric**: FIELD_ERROR (lower = better). ~20-40s per Stage 2 run locally.
 
 ### Single-Stage: Full Quasi-Symmetry
 Minimizes non-QS ratio + Boozer residual + iota/volume tracking + engineering constraints.
@@ -50,15 +47,21 @@ J = NonQSRatio
   + CURVATURE_WEIGHT * LpCurveCurvature(p=2, threshold=CURVATURE_THRESHOLD)
 ```
 
-**Primary metrics**: FIELD_ERROR, FINAL_IOTA vs TARGET_IOTA, FINAL_VOLUME vs TARGET_VOLUME. ~2-10 min per run depending on mpol.
+**Primary metrics**: FIELD_ERROR, FINAL_IOTA vs TARGET_IOTA, FINAL_VOLUME vs TARGET_VOLUME.
 
-## Three Equilibria
+**Runtime warning**: Single-stage is dominated by Boozer surface initialization, not the optimizer. At nphi=127 ntheta=32, even maxiter=5 can take 10-20 minutes. Use `--timeout 1200` or `--timeout 3600` for single-stage. Low resolutions (nphi<100, ntheta<32) may crash the Boozer init — don't go below nphi=127 ntheta=32.
 
-| Name | File | Prior Stage 2 Runs | Best non-SI FE |
-|------|------|--------------------|----------------|
-| `iota15` | `wout_nfp22ginsburg_000_014417_iota15.nc` | 71 (DATABASE) + 200+ autoresearch runs | 0.00949 (DATABASE), 0.00429 (autoresearch frontier) |
-| `iota20` | `wout_nfp22ginsburg_000_002084_iota20.nc` | 65 (DATABASE) | 0.01041 |
-| `001490` | `wout_nfp22ginsburg_000_001490.nc` | 55 (DATABASE) | 0.01270 |
+## Equilibria and Targets
+
+Three equilibrium files are available as starting plasma surfaces:
+
+| Shorthand | File |
+|-----------|------|
+| `iota15` | `wout_nfp22ginsburg_000_014417_iota15.nc` |
+| `iota20` | `wout_nfp22ginsburg_000_002084_iota20.nc` |
+| `001490` | `wout_nfp22ginsburg_000_001490.nc` |
+
+These define the plasma geometry. Within each, `--major-radius` and `--toroidal-flux` are continuous — explore freely. For single-stage, `--iota-target` is also continuous (0.10 to 0.25 or beyond) and independent of the equilibrium name. The names "iota15" and "iota20" are labels for the equilibrium file, not constraints on what iota you can target.
 
 ## Running an Experiment
 
@@ -71,20 +74,36 @@ python scripts/run_one.py --cc-weight 44 --curvature-threshold 30
 # Stage 2 with iota20
 python scripts/run_one.py --equilibrium iota20 --cc-weight 50
 
-# Single-stage
-python scripts/run_one.py --solver single-stage --equilibrium iota20 \
-  --iota-target 0.20 --vol-target 0.10 --mpol 8 --res-weight 500
+# Single-stage (needs longer timeout)
+python scripts/run_one.py --solver single-stage --equilibrium iota15 \
+  --iota-target 0.15 --vol-target 0.10 --mpol 8 --timeout 1200
 
 # Run with all defaults (Stage 2, iota15, frontier params)
 python scripts/run_one.py
 ```
 
-Output is one line of JSON to stdout:
+Output is one line of JSON to stdout (also auto-appended to `results.jsonl`):
 ```json
-{"solver": "stage2", "equilibrium": "iota15", "status": "pass", "field_error": 0.01194, "self_intersecting": false, "max_curvature": 30.54, "score": 0.7596, "iterations": 320, "elapsed": 42.3}
+{"solver": "stage2", "equilibrium": "iota15", "status": "pass", "score": 0.7596, "field_error": 0.01194, "self_intersecting": false, "max_curvature": 30.54, "iterations": 320, "elapsed": 42.3, "params": {"cc_weight": 44.0, "curvature_threshold": 30.0, ...}}
 ```
 
 Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
+
+On crash: the run directory is preserved for debugging. The JSON includes `run_dir` path and last 30 lines of the solver log.
+
+### Stage 2 Seeds for Single-Stage
+
+Single-stage requires a `biot_savart_opt.json` from a completed Stage 2 run as its starting coil. `run_one.py` handles this automatically:
+
+- Every Stage 2 run persists its seed to `stage2_seeds/` (28 seeds available now).
+- When you run single-stage, `run_one.py` searches `stage2_seeds/` and Columbia DATABASE for a matching seed.
+- If no match exists, it auto-runs Stage 2 first to generate one.
+- You can also pass `--stage2-bs-path /path/to/biot_savart_opt.json` explicitly.
+
+To list available seeds:
+```bash
+find stage2_seeds -name results.json | while read f; do python3 -c "import json; r=json.load(open('$f')); print(f'FE={r[\"FIELD_ERROR\"]:.6f} O={r[\"order\"]} {f}')"; done | sort -n | head -10
+```
 
 ### All Parameters
 
@@ -101,9 +120,9 @@ Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
 | `--curvature-weight` | 0.00085 | Curvature penalty weight |
 | `--curvature-threshold` | 30.0 | Max curvature before penalty |
 | `--banana-surf-radius` | 0.22 | Coil winding surface radius |
-| `--major-radius` | 0.915 | Plasma major radius |
-| `--toroidal-flux` | 0.215 | Flux surface label |
-| `--order` | 2 | Fourier modes for coil shape |
+| `--major-radius` | 0.915 | Plasma major radius (Stage 2 direct, single-stage as seed param) |
+| `--toroidal-flux` | 0.215 | Flux surface label (Stage 2 direct, single-stage as seed param) |
+| `--order` | 2 | Fourier modes for coil shape (Stage 2 direct, single-stage as seed param) |
 | `--maxiter` | 400 | Optimizer iterations |
 | `--nphi` | 127 | Toroidal resolution |
 | `--ntheta` | 32 | Poloidal resolution |
@@ -143,14 +162,17 @@ Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
 | `--maxcor` | 300 | L-BFGS-B memory |
 | `--boozer-stage` | initial | `initial` or `final` |
 | `--num-tf-coils` | 20 | TF coil count |
-| `--stage2-source` | database | `database` or `local` |
-| `--stage2-bs-path` | (auto) | Explicit Stage 2 seed path |
+| `--stage2-bs-path` | (auto) | Explicit Stage 2 seed path (usually auto-resolved) |
 
 **Execution:**
-| Flag | Default |
-|------|---------|
-| `--omp-threads` | 10 |
-| `--timeout` | 600 |
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--omp-threads` | 10 | CPU threads |
+| `--timeout` | 600 | Use 1200+ for single-stage |
+
+**Parallel runs**: You can run multiple experiments concurrently. `run_one.py` auto-detects concurrent instances and reduces threads per run to share the 14 CPU cores fairly. No manual `--omp-threads` adjustment needed. However, be aware that parallel single-stage runs (10+ min each) will be slower per-run than serial. For single-stage, prefer running one at a time for best results.
+
+**Single-stage crash note**: If single-stage crashes with "surface goes back on itself", the Stage 2 seed coil produces an invalid Boozer surface. This is a geometry issue with the seed, not the single-stage weights. Try a different seed (different Stage 2 params or a different equilibrium).
 
 ## Scoring
 
@@ -160,45 +182,52 @@ Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
 
 **SELF_INTERSECTING = True → always discard.**
 
-## Known Patterns (from 200+ autoresearch runs on iota15 Stage 2)
+## Prior Results
 
-**Current frontier (Run 163): FE=0.00429, order=3, CCW=50, CW=0.005, CT=20, LW=1e-5, TF=0.215, CCT=0.021, maxiter=800.**
+Read `results.jsonl` and `results.tsv` for full details. Here is a summary of what has been tried and what hasn't. Treat this as a starting point, not a constraint — every finding below was made under specific conditions and may not generalize.
 
-**Breakthroughs in order of discovery:**
-1. `curvature_threshold=30` with `curvature_weight≈0.0008` prevents self-intersection (Run 3).
-2. `cc_weight≈44-50` sweet spot, `toroidal_flux=0.215` sharp optimum (Runs 50-68).
-3. `order=3` halved field error from ~0.012 to ~0.006 (Run 137). Requires `CT=20`, `CW=0.005` to avoid SI.
-4. `length_weight=1e-5` halved field error again from ~0.006 to ~0.004 (Run 154). Sharp optimum — LW=1.2e-5 self-intersects.
+**What has been explored (Stage 2 only, mostly iota15):**
+- Weight sensitivity around order=2 and order=3 for iota15
+- A few runs on iota20 and 001490 transferring iota15 settings
+- Basin non-determinism: same params produce different results due to L-BFGS-B noise sensitivity
 
-**Basin non-determinism:** At the order=3 frontier, the L-BFGS-B optimizer is sensitive to numerical noise. The same params can produce FE=0.004 (good basin) or FE=0.015 (bad basin). Replications often land in intermediate basins (FE≈0.006-0.008). The frontier result FE=0.00429 has been reproduced but not consistently.
+**What has NOT been explored:**
+- Single-stage solver (10 attempts, all crashed on Boozer init — needs debugging)
+- Systematic weight exploration for iota20 and 001490 (only a handful of runs each)
+- Different equilibria may have completely different optimal weight regions
+- Single-stage weight space (res_weight, iotas_weight, surf_dist_weight) — never tuned
+- Higher order (4, 5) for any equilibrium
+- Cross-solver validation (does a good Stage 2 coil produce good QS fields?)
+- Whether iota15 insights transfer to other equilibria or are coincidental
 
-**Unexplored directions:**
-- iota20 and 001490 equilibria — barely explored beyond DATABASE grid sweeps.
-- Single-stage solver — not run at all in autoresearch campaigns.
-- Higher `order` (4, 5) — not tested, likely needs even tighter curvature control.
-- Newly exposed weights (res_weight, iotas_weight, surf_dist_weight, etc.) — single-stage only, never tuned.
+**Operational notes:**
+- Single-stage needs `nphi=127 ntheta=32` minimum (lower crashes Boozer init) and `--timeout 1200`+
+- Basin non-determinism: at order=3, the same params can produce very different results. Don't assume one run is representative.
+- 001490 self-intersects at CT=20 with the same params that work for iota15 — each equilibrium needs its own exploration
 
 ## Logging Results
 
-Log to `results.tsv` (tab-separated). Header:
+`run_one.py` automatically appends every result to `results.jsonl` (one JSON object per line). Each record includes full input params + output metrics + score. You do NOT need to manually log results.
 
-```
-run	solver	equilibrium	field_error	score	self_intersecting	status	description
+To review past experiments:
+```bash
+# All results
+cat results.jsonl | python3 -c "import json,sys; [print(f'{json.loads(l)[\"solver\"]}/{json.loads(l)[\"equilibrium\"]} FE={json.loads(l)[\"field_error\"]} score={json.loads(l)[\"score\"]} SI={json.loads(l)[\"self_intersecting\"]}') for l in sys.stdin]"
+
+# Best non-SI results
+cat results.jsonl | python3 -c "import json,sys; runs=[json.loads(l) for l in sys.stdin]; good=[r for r in runs if r.get('status')=='pass']; good.sort(key=lambda r: r.get('field_error',999)); [print(f'FE={r[\"field_error\"]:.6f} score={r[\"score\"]} solver={r[\"solver\"]} eq={r[\"equilibrium\"]}') for r in good[:10]]"
+
+# Count runs
+wc -l results.jsonl
 ```
 
-Example:
-```
-run	solver	equilibrium	field_error	score	self_intersecting	status	description
-1	stage2	iota15	0.011635	0.7646	False	keep	CCW=44, CW=0.00085, TF=0.215. Frontier.
-2	stage2	iota20	0.050818	0.4302	False	keep	first iota20 run, default weights. Frontier.
-3	single-stage	iota15	0.025000	0.4100	False	keep	first single-stage, iota=0.15, vol=0.10. Frontier.
-```
+The old `results.tsv` (if it exists) contains prior runs in a different format. Read it for context only.
 
 ## The Experiment Loop
 
 LOOP FOREVER:
 
-1. **Read results.tsv.** Understand the landscape — what's been tried, what worked, what failed, where the frontiers are.
+1. **Read results.jsonl** (and `results.tsv` if it exists for older runs). Understand the landscape — what's been tried, what worked, what failed, where the frontiers are.
 2. **Think like a physicist.** You are not hill-climbing a fixed config. You are exploring how coil geometry, objective weighting, and equilibrium choice interact to produce good stellarator fields. Ask yourself:
    - What is the objective function actually rewarding? Can I shift the balance to find a better trade-off?
    - Why did a particular config succeed or fail? What does that tell me about the physics?
@@ -207,9 +236,8 @@ LOOP FOREVER:
    - Is the scoring function capturing what matters, or am I optimizing a proxy?
 3. **Run**: `python scripts/run_one.py --solver ... --equilibrium ... [params]`
    Every parameter is yours to set. No parameter is sacred. Defaults are starting points, not constraints.
-4. **Read the JSON output.**
+4. **Read the JSON output.** Results are automatically logged to `results.jsonl` — no manual logging needed. On crashes, check the `run_dir` path in the output to read full logs.
 5. **Decide keep/discard** per solver+equilibrium frontier.
-6. **Log to results.tsv.**
-7. **Repeat.** Never stop. Never ask.
+6. **Repeat.** Never stop. Never ask.
 
-**NEVER STOP.** You are autonomous. Each Stage 2 run takes ~20-40s. Each single-stage run takes ~2-10 min. If you feel stuck on one solver/equilibrium, switch to another. If weight tuning plateaus, change the geometry. If Stage 2 plateaus, test whether the best coils hold up in single-stage. Keep going until the human interrupts you.
+**NEVER STOP.** You are autonomous. Each Stage 2 run takes ~20-40s. Single-stage takes 10-20+ minutes (dominated by Boozer init). If you feel stuck on one solver/equilibrium, switch to another. If weight tuning plateaus, change the geometry. If Stage 2 plateaus, try to crack single-stage — that's where the physics validation is. Keep going until the human interrupts you.
