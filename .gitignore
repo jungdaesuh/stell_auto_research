@@ -24,6 +24,7 @@ results.tsv
 results.jsonl
 results_*.jsonl
 stage2_seeds/
+single_stage_results/
 *.sqlite
 
 # AWS state

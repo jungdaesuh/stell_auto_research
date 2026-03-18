@@ -69,7 +69,7 @@ These define the plasma geometry. Within each, `--major-radius` and `--toroidal-
 
 ```bash
 # Stage 2 with iota15 (default)
-python scripts/run_one.py --cc-weight 44 --curvature-threshold 30
+python scripts/run_one.py --cc-weight 100 --curvature-threshold 40
 
 # Stage 2 with iota20
 python scripts/run_one.py --equilibrium iota20 --cc-weight 50
@@ -120,9 +120,9 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 **Shared (both solvers):**
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--cc-weight` | 44.0 | Coil-coil spacing weight |
-| `--curvature-weight` | 0.00085 | Curvature penalty weight |
-| `--curvature-threshold` | 30.0 | Max curvature before penalty |
+| `--cc-weight` | 100.0 | Coil-coil spacing weight |
+| `--curvature-weight` | 0.0001 | Curvature penalty weight |
+| `--curvature-threshold` | 40.0 | Max curvature before penalty |
 | `--banana-surf-radius` | 0.22 | Coil winding surface radius |
 | `--major-radius` | 0.915 | Plasma major radius (Stage 2 direct, single-stage as seed param) |
 | `--toroidal-flux` | 0.215 | Flux surface label (Stage 2 direct, single-stage as seed param) |
@@ -135,7 +135,7 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--cc-threshold` | 0.05 | Coil-coil min distance (m) |
-| `--length-weight` | 0.0001 | Curve length penalty |
+| `--length-weight` | 0.0005 | Curve length penalty |
 | `--length-target` | 1.75 | Target coil length (m) |
 | `--squared-flux-weight` | 1.0 | Weight on SquaredFlux term |
 | `--curvature-p-norm` | 4 | Lp exponent for curvature penalty |
@@ -146,6 +146,8 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 | `--phi-width` | 0.03 | Coil toroidal width |
 | `--ftol` | 1e-15 | L-BFGS-B function tolerance |
 | `--gtol` | 1e-15 | L-BFGS-B gradient tolerance |
+| `--basin-hops` | 0 | Basin-hopping restarts (0 = single L-BFGS-B). Try 10-50 for deep exploration. Each hop perturbs coil DOFs and re-runs L-BFGS-B, keeping the best result. Runtime scales linearly: 20 hops ≈ 20× single run. |
+| `--basin-stepsize` | 0.01 | Perturbation scale for basin-hopping (fraction of DOF range) |
 
 **Single-stage only:**
 | Flag | Default | Notes |
@@ -186,20 +188,26 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 
 **SELF_INTERSECTING = True → always discard.**
 
-**Hardware limits (enforced in the solver code, cannot be overridden):**
+**Constraint floors (enforced in the solver code via `max()`, cannot go below):**
 - `cc_threshold` / `cc_dist` >= 0.05m (5cm minimum coil-coil spacing)
 - `curvature_threshold` >= 20 (minimum curvature limit)
 - `length_target` >= 1.75m (maximum coil length)
 - `cs_dist` >= 0.02m (2cm minimum coil-to-surface clearance, single-stage only)
 - `ss_dist` >= 0.04m (4cm minimum surface-to-vessel clearance, single-stage only)
 
-All five are clamped via `max()` in the solver files themselves. Even if you pass values below these, the solver uses the minimums. You can freely adjust weights (cc_weight, curvature_weight, length_weight, cs_weight, surf_dist_weight) to change how hard the optimizer pushes against these limits, but the limits themselves are fixed.
+These are working defaults from the baseline code, not confirmed hardware limits. The hardware team is reviewing final values. You can freely adjust weights (cc_weight, curvature_weight, length_weight, cs_weight, surf_dist_weight) to change how hard the optimizer pushes against these limits.
+
+**IMPORTANT — Curvature threshold: explore both CT=20 and CT=40.** The baseline Stage 2 used CT=40, the baseline single-stage used CT=20. The hardware team has not confirmed which is the true limit. You MUST explore both paths:
+- **CT=20 path**: tighter curvature, forces smoother coils, current best FE~0.0033 with order=4
+- **CT=40 path**: looser curvature (Stage 2 baseline default), allows sharper bends, needs its own weight tuning
+
+Track two separate frontiers. Do not neglect CT=40 just because CT=20 has better results so far — CT=40 has not been properly explored with order=4 and optimized weights.
 
 ## Prior Results
 
 New runs go to `results.jsonl`. Archived prior data in `results_pre_hardware_limits.jsonl` and `results_pre_hardware_limits.tsv`.
 
-**IMPORTANT**: Hardware constraint enforcement was added after 150+ prior runs. Many Stage 2 runs used `cc_threshold=0.021` — below the 0.05m hardware minimum now enforced in the solver. Those exact results cannot be reproduced. The Stage 2 frontier needs to be re-established with hardware-legal params.
+**IMPORTANT**: Constraint floor enforcement was added after 150+ prior runs. Many Stage 2 runs used `cc_threshold=0.021` — below the 0.05m baseline default now enforced in the solver. Those exact results cannot be reproduced. The Stage 2 frontier needs to be re-established with constraint-legal params.
 
 Prior data is archived for reference (read-only, do not log new results here):
 - `results_pre_hardware_limits.jsonl` — 150+ runs with full params. Single-stage results using `cc_dist=0.05` are still valid. Stage 2 runs with `cc_threshold < 0.05` are not reproducible but show useful patterns (weight sensitivity, basin non-determinism, order=3 breakthrough, equilibrium behavior).

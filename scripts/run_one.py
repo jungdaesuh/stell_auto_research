@@ -37,6 +37,7 @@ SIMSOPT_ROOT = Path("/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed")
 EQUILIBRIA = Path("/Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA")
 OUTPUT_BASE = Path("/tmp/hbt_autoresearch")
 STAGE2_SEED_STORE = REPO_ROOT / "stage2_seeds"
+SINGLE_STAGE_STORE = REPO_ROOT / "single_stage_results"
 
 SOLVERS = {
     "stage2": SIMSOPT_ROOT
@@ -150,10 +151,10 @@ def main() -> None:
     )
 
     # --- Shared params (both solvers) ---
-    parser.add_argument("--cc-weight", type=float, default=44.0)
+    parser.add_argument("--cc-weight", type=float, default=100.0)
     parser.add_argument("--cc-threshold", type=float, default=0.05)
-    parser.add_argument("--curvature-weight", type=float, default=0.00085)
-    parser.add_argument("--curvature-threshold", type=float, default=30.0)
+    parser.add_argument("--curvature-weight", type=float, default=0.0001)
+    parser.add_argument("--curvature-threshold", type=float, default=40.0)
     parser.add_argument("--banana-surf-radius", type=float, default=0.22)
     parser.add_argument("--major-radius", type=float, default=0.915)
     parser.add_argument("--toroidal-flux", type=float, default=0.215)
@@ -166,7 +167,7 @@ def main() -> None:
     parser.add_argument(
         "--length-weight",
         type=float,
-        default=0.0001,
+        default=0.0005,
         help="Stage 2: curve length penalty weight.",
     )
     parser.add_argument("--length-target", type=float, default=1.75)
@@ -193,6 +194,26 @@ def main() -> None:
         type=int,
         default=128,
         help="Stage 2: coil discretization points.",
+    )
+
+    # --- Basin-hopping (Stage 2 only) ---
+    parser.add_argument(
+        "--basin-hops",
+        type=int,
+        default=0,
+        help="Stage 2: number of basin-hopping restarts (0 = single L-BFGS-B, default).",
+    )
+    parser.add_argument(
+        "--basin-stepsize",
+        type=float,
+        default=0.01,
+        help="Stage 2: perturbation scale for basin-hopping (default 0.01).",
+    )
+    parser.add_argument(
+        "--basin-seed",
+        type=int,
+        default=-1,
+        help="Stage 2: RNG seed for basin-hopping (-1 = random). Set for reproducibility.",
     )
 
     # --- Single-stage only ---
@@ -463,6 +484,38 @@ def _run_experiment(args: argparse.Namespace) -> None:
 
             output["stage2_seed_path"] = str(seed_dir / "biot_savart_opt.json")
 
+    # For single-stage: persist artifacts (biot_savart_opt.json, results.json, surf_opt.json)
+    # Only overwrite if new result has lower field error
+    if args.solver == "single-stage" and output.get("status") == "pass":
+        ss_files = list(run_dir.rglob("results.json"))
+        if ss_files:
+            # Use the solver's output subdirectory name as the key
+            artifact_dir = (
+                SINGLE_STAGE_STORE / f"outputs-{plasma_surf}" / ss_files[0].parent.name
+            )
+            new_fe = metrics.get("FIELD_ERROR", 999.0)
+            if isinstance(new_fe, float) and math.isnan(new_fe):
+                new_fe = 999.0
+            should_write = True
+            existing = artifact_dir / "results.json"
+            if existing.is_file():
+                with open(existing) as f:
+                    old_fe = json.load(f).get("FIELD_ERROR", 999.0)
+                if isinstance(old_fe, float) and math.isnan(old_fe):
+                    old_fe = 999.0
+                if new_fe >= old_fe:
+                    should_write = False
+
+            if should_write:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                # Copy all solver artifacts from the run directory
+                src_dir = ss_files[0].parent
+                for artifact in src_dir.iterdir():
+                    if artifact.is_file():
+                        shutil.copy2(artifact, artifact_dir / artifact.name)
+
+            output["single_stage_artifact_dir"] = str(artifact_dir)
+
     # Keep crash logs for debugging, clean up successful runs
     if output.get("status") in ("crash", "fail"):
         output["run_dir"] = str(run_dir)
@@ -535,12 +588,22 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
                         seed_meta.get("banana_surf_radius", 0) - args.banana_surf_radius
                     )
                     < 0.001
+                    and abs(
+                        seed_meta.get("CURVATURE_THRESHOLD", 40)
+                        - args.curvature_threshold
+                    )
+                    < 0.1
                 ):
+                    seed_ct = seed_meta.get("CURVATURE_THRESHOLD", seed_meta.get("curvature_threshold"))
+                    print(
+                        f"Seed matched: CT={seed_ct} path={bs_file}",
+                        file=sys.stderr,
+                    )
                     return str(bs_file)
 
     # No seed found — auto-run Stage 2 to generate one
     print(
-        f"No Stage 2 seed found for MR={args.major_radius} CCW={args.cc_weight} Order={args.order}. Running Stage 2 first...",
+        f"No Stage 2 seed found for MR={args.major_radius} TF={args.toroidal_flux} CCW={args.cc_weight} CT={args.curvature_threshold} Order={args.order}. Running Stage 2 first...",
         file=sys.stderr,
     )
     stage2_cmd = [
@@ -645,6 +708,12 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.curvature_p_norm),
             "--num-quadpoints",
             str(args.num_quadpoints),
+            "--basin-hops",
+            str(args.basin_hops),
+            "--basin-stepsize",
+            str(args.basin_stepsize),
+            "--basin-seed",
+            str(args.basin_seed),
         ]
     else:
         # Resolve Stage 2 seed — auto-searches stage2_seeds/, Columbia DATABASE, or runs Stage 2
@@ -687,6 +756,12 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.ss_dist),
             "--maxcor",
             str(args.maxcor),
+            "--basin-hops",
+            str(args.basin_hops),
+            "--basin-stepsize",
+            str(args.basin_stepsize),
+            "--basin-seed",
+            str(args.basin_seed),
         ]
         return cli
 
@@ -718,6 +793,8 @@ def _extract_params(args: argparse.Namespace) -> dict:
                 "phi_center": args.phi_center,
                 "theta_width": args.theta_width,
                 "phi_width": args.phi_width,
+                "basin_hops": args.basin_hops,
+                "basin_stepsize": args.basin_stepsize,
             }
         )
     else:

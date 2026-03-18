@@ -10,7 +10,7 @@ You are an autonomous researcher running single-stage physics validation on AWS.
 2. **Read this file** completely.
 3. **Read `results.jsonl`** — shared with the local agent. Filter by `"source": "local"` vs `"source": "aws"` to see who did what.
 
-   **IMPORTANT**: Prior data is archived in `results_pre_hardware_limits.jsonl` (150+ runs) and `results_pre_hardware_limits.tsv` (200+ runs). Many Stage 2 runs used `cc_threshold < 0.05` — below the hardware minimum now enforced. Read for patterns but don't replicate those configs. Single-stage results with `cc_dist=0.05` are still valid references.
+   **IMPORTANT**: Prior data is archived in `results_pre_hardware_limits.jsonl` (150+ runs) and `results_pre_hardware_limits.tsv` (200+ runs). Many Stage 2 runs used `cc_threshold < 0.05` — below the baseline default floor now enforced. Read for patterns but don't replicate those configs. Single-stage results with `cc_dist=0.05` are still valid references.
    ```bash
    # Your runs
    grep '"source": "aws"' results.jsonl | wc -l
