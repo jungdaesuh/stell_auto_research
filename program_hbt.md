@@ -8,7 +8,7 @@ You are an autonomous researcher optimizing HBT stellarator banana coil configur
 2. **Read this file** completely.
 3. **Read prior art**:
    - `results.jsonl` if it exists — each line is a full JSON record with params + results. This is the primary log.
-   - `results.tsv` if it exists — older runs in tab-separated format (no structured params). Read for context only.
+   - `results_pre_hardware_limits.jsonl` and `results_pre_hardware_limits.tsv` — archived prior runs (before hardware constraints were enforced). Read for patterns but don't replicate configs with `cc_threshold < 0.05`.
    - Columbia DATABASE: 191 Stage 2 runs across 3 equilibria (default weights only, grid over MR/TF).
    - 121 single-stage output dirs across 5 iota targets (0.15-0.25) and 5 volume targets.
 4. **If no results.jsonl exists**, run a first experiment to initialize it:
@@ -74,9 +74,13 @@ python scripts/run_one.py --cc-weight 44 --curvature-threshold 30
 # Stage 2 with iota20
 python scripts/run_one.py --equilibrium iota20 --cc-weight 50
 
-# Single-stage (needs longer timeout)
+# Single-stage with different iota targets (needs longer timeout)
 python scripts/run_one.py --solver single-stage --equilibrium iota15 \
-  --iota-target 0.15 --vol-target 0.10 --mpol 8 --timeout 1200
+  --iota-target 0.17 --vol-target 0.10 --mpol 8 --timeout 1200
+
+# Single-stage with a different equilibrium and iota target
+python scripts/run_one.py --solver single-stage --equilibrium iota20 \
+  --iota-target 0.22 --vol-target 0.12 --mpol 8 --timeout 1200
 
 # Run with all defaults (Stage 2, iota15, frontier params)
 python scripts/run_one.py
@@ -84,7 +88,7 @@ python scripts/run_one.py
 
 Output is one line of JSON to stdout (also auto-appended to `results.jsonl`):
 ```json
-{"solver": "stage2", "equilibrium": "iota15", "status": "pass", "score": 0.7596, "field_error": 0.01194, "self_intersecting": false, "max_curvature": 30.54, "iterations": 320, "elapsed": 42.3, "params": {"cc_weight": 44.0, "curvature_threshold": 30.0, ...}}
+{"source": "local", "solver": "stage2", "equilibrium": "iota15", "status": "pass", "score": 0.7596, "field_error": 0.01194, "self_intersecting": false, "max_curvature": 30.54, "iterations": 320, "elapsed": 42.3, "params": {"cc_weight": 44.0, "curvature_threshold": 30.0, ...}}
 ```
 
 Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
@@ -95,7 +99,7 @@ On crash: the run directory is preserved for debugging. The JSON includes `run_d
 
 Single-stage requires a `biot_savart_opt.json` from a completed Stage 2 run as its starting coil. `run_one.py` handles this automatically:
 
-- Every Stage 2 run persists its seed to `stage2_seeds/` (28 seeds available now).
+- Every Stage 2 run persists its seed to `stage2_seeds/`.
 - When you run single-stage, `run_one.py` searches `stage2_seeds/` and Columbia DATABASE for a matching seed.
 - If no match exists, it auto-runs Stage 2 first to generate one.
 - You can also pass `--stage2-bs-path /path/to/biot_savart_opt.json` explicitly.
@@ -146,8 +150,8 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 **Single-stage only:**
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--iota-target` | 0.15 | Target rotational transform |
-| `--vol-target` | 0.10 | Target plasma volume |
+| `--iota-target` | 0.15 | Target rotational transform (continuous — try 0.10 to 0.30) |
+| `--vol-target` | 0.10 | Target plasma volume (continuous — try 0.05 to 0.20) |
 | `--mpol` | 8 | Poloidal Fourier resolution |
 | `--ntor` | 6 | Toroidal Fourier resolution |
 | `--constraint-weight` | 1.0 | Boozer constraint weight |
@@ -193,11 +197,19 @@ All five are clamped via `max()` in the solver files themselves. Even if you pas
 
 ## Prior Results
 
-Read `results.jsonl` and `results.tsv` for full details. These contain 150+ runs across both solvers and all equilibria. Treat findings as starting points, not constraints — every result was made under specific conditions and may not generalize.
+New runs go to `results.jsonl`. Archived prior data in `results_pre_hardware_limits.jsonl` and `results_pre_hardware_limits.tsv`.
+
+**IMPORTANT**: Hardware constraint enforcement was added after 150+ prior runs. Many Stage 2 runs used `cc_threshold=0.021` — below the 0.05m hardware minimum now enforced in the solver. Those exact results cannot be reproduced. The Stage 2 frontier needs to be re-established with hardware-legal params.
+
+Prior data is archived for reference (read-only, do not log new results here):
+- `results_pre_hardware_limits.jsonl` — 150+ runs with full params. Single-stage results using `cc_dist=0.05` are still valid. Stage 2 runs with `cc_threshold < 0.05` are not reproducible but show useful patterns (weight sensitivity, basin non-determinism, order=3 breakthrough, equilibrium behavior).
+- `results_pre_hardware_limits.tsv` — older 200+ runs (no structured params).
+
+Read these to understand the landscape, but all new runs go to `results.jsonl`.
 
 **Operational notes:**
 - Single-stage needs `nphi=127 ntheta=32` minimum (lower crashes Boozer init) and `--timeout 1200`+
-- Single-stage has a Boozer init pre-check that catches crashes in seconds. ~44% of single-stage runs pass.
+- Single-stage has a Boozer init pre-check that catches crashes in seconds. Many seeds crash — try different ones.
 - Basin non-determinism: at order=3, the same params can produce very different results. Don't assume one run is representative.
 - 001490 Boozer surface crashes in single-stage — geometry incompatible with current seeds.
 - Each equilibrium needs its own exploration — weight optima don't transfer directly.
@@ -218,13 +230,13 @@ cat results.jsonl | python3 -c "import json,sys; runs=[json.loads(l) for l in sy
 wc -l results.jsonl
 ```
 
-The old `results.tsv` (if it exists) contains prior runs in a different format. Read it for context only.
+Archived data (`results_pre_hardware_limits.*`) contains prior runs before hardware enforcement. Read for patterns only.
 
 ## The Experiment Loop
 
 LOOP FOREVER:
 
-1. **Read results.jsonl** (and `results.tsv` if it exists for older runs). Understand the landscape — what's been tried, what worked, what failed, where the frontiers are.
+1. **Read results.jsonl** (and archived `results_pre_hardware_limits.*` for prior patterns). Understand the landscape — what's been tried, what worked, what failed, where the frontiers are.
 2. **Think like a physicist.** You are not hill-climbing a fixed config. You are exploring how coil geometry, objective weighting, and equilibrium choice interact to produce good stellarator fields. Ask yourself:
    - What is the objective function actually rewarding? Can I shift the balance to find a better trade-off?
    - Why did a particular config succeed or fail? What does that tell me about the physics?
