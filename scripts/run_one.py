@@ -54,7 +54,23 @@ SOLVERS = {
 
 EQUILIBRIUM_FILES = {
     "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
+    "iota15p": "wout_nfp22ginsburg_desc_iota15.nc",
+    "iota16": "wout_nfp22ginsburg_desc_iota16.nc",
+    "iota17": "wout_nfp22ginsburg_desc_iota17.nc",
+    "iota18": "wout_nfp22ginsburg_desc_iota18.nc",
+    "iota19": "wout_nfp22ginsburg_desc_iota19.nc",
     "iota20": "wout_nfp22ginsburg_000_002084_iota20.nc",
+    "iota20p": "wout_nfp22ginsburg_desc_iota20.nc",
+    "iota21": "wout_nfp22ginsburg_desc_iota21.nc",
+    "iota22": "wout_nfp22ginsburg_desc_iota22.nc",
+    "iota23": "wout_nfp22ginsburg_desc_iota23.nc",
+    "iota24": "wout_nfp22ginsburg_desc_iota24.nc",
+    "iota25": "wout_nfp22ginsburg_desc_iota25.nc",
+    "iota26": "wout_nfp22ginsburg_desc_iota26.nc",
+    "iota27": "wout_nfp22ginsburg_desc_iota27.nc",
+    "iota28": "wout_nfp22ginsburg_desc_iota28.nc",
+    "iota29": "wout_nfp22ginsburg_desc_iota29.nc",
+    "iota30": "wout_nfp22ginsburg_desc_iota30.nc",
     "001490": "wout_nfp22ginsburg_000_001490.nc",
 }
 
@@ -454,65 +470,36 @@ def _run_experiment(args: argparse.Namespace) -> None:
         output["target_iota"] = metrics.get("TARGET_IOTA")
         output["target_volume"] = metrics.get("TARGET_VOLUME")
 
-    # For Stage 2: persist biot_savart_opt.json so single-stage can use it as a seed
-    # Only overwrite if the new result has lower field error than the existing seed
+    # For Stage 2: persist all runs as seeds for single-stage
     if args.solver == "stage2":
         bs_files = list(run_dir.rglob("biot_savart_opt.json"))
+        results_files = list(run_dir.rglob("results.json"))
         if bs_files:
+            ts = int(time.time())
             seed_dir = (
-                STAGE2_SEED_STORE / f"outputs-{plasma_surf}" / bs_files[0].parent.name
+                STAGE2_SEED_STORE / f"outputs-{plasma_surf}" / f"{bs_files[0].parent.name}-{ts}"
             )
-            existing_results = seed_dir / "results.json"
-            new_fe = metrics.get("FIELD_ERROR", 999.0)
-            if isinstance(new_fe, float) and math.isnan(new_fe):
-                new_fe = 999.0
-            should_write = True
-            if existing_results.is_file():
-                with open(existing_results) as f:
-                    old = json.load(f)
-                old_fe = old.get("FIELD_ERROR", 999.0)
-                if isinstance(old_fe, float) and math.isnan(old_fe):
-                    old_fe = 999.0
-                if new_fe >= old_fe:
-                    should_write = False
-
-            if should_write:
-                seed_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(bs_files[0], seed_dir / "biot_savart_opt.json")
-                if results_files:
-                    shutil.copy2(results_files[0], seed_dir / "results.json")
+            seed_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bs_files[0], seed_dir / "biot_savart_opt.json")
+            if results_files:
+                shutil.copy2(results_files[0], seed_dir / "results.json")
 
             output["stage2_seed_path"] = str(seed_dir / "biot_savart_opt.json")
 
-    # For single-stage: persist artifacts (biot_savart_opt.json, results.json, surf_opt.json)
-    # Only overwrite if new result has lower field error
+    # For single-stage: persist all passing run artifacts
     if args.solver == "single-stage" and output.get("status") == "pass":
         ss_files = list(run_dir.rglob("results.json"))
         if ss_files:
-            # Use the solver's output subdirectory name as the key
+            # Append timestamp to directory name so no run overwrites another
+            ts = int(time.time())
             artifact_dir = (
-                SINGLE_STAGE_STORE / f"outputs-{plasma_surf}" / ss_files[0].parent.name
+                SINGLE_STAGE_STORE / f"outputs-{plasma_surf}" / f"{ss_files[0].parent.name}-{ts}"
             )
-            new_fe = metrics.get("FIELD_ERROR", 999.0)
-            if isinstance(new_fe, float) and math.isnan(new_fe):
-                new_fe = 999.0
-            should_write = True
-            existing = artifact_dir / "results.json"
-            if existing.is_file():
-                with open(existing) as f:
-                    old_fe = json.load(f).get("FIELD_ERROR", 999.0)
-                if isinstance(old_fe, float) and math.isnan(old_fe):
-                    old_fe = 999.0
-                if new_fe >= old_fe:
-                    should_write = False
-
-            if should_write:
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                # Copy all solver artifacts from the run directory
-                src_dir = ss_files[0].parent
-                for artifact in src_dir.iterdir():
-                    if artifact.is_file():
-                        shutil.copy2(artifact, artifact_dir / artifact.name)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            src_dir = ss_files[0].parent
+            for artifact in src_dir.iterdir():
+                if artifact.is_file():
+                    shutil.copy2(artifact, artifact_dir / artifact.name)
 
             output["single_stage_artifact_dir"] = str(artifact_dir)
 
@@ -554,6 +541,9 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
     plasma_dir = f"outputs-{plasma_surf}"
 
     # Search stage2_seeds/ (autoresearch runs) — solver uses R0/s/CCT/CT format
+    # Collect all matching seeds and pick the one with lowest field error
+    best_seed = None
+    best_fe = float("inf")
     for search_root in [STAGE2_SEED_STORE, COLUMBIA_DATABASE]:
         seeds_parent = search_root / plasma_dir
         if not seeds_parent.is_dir():
@@ -594,12 +584,19 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
                     )
                     < 0.1
                 ):
-                    seed_ct = seed_meta.get("CURVATURE_THRESHOLD", seed_meta.get("curvature_threshold"))
-                    print(
-                        f"Seed matched: CT={seed_ct} path={bs_file}",
-                        file=sys.stderr,
-                    )
-                    return str(bs_file)
+                    fe = seed_meta.get("FIELD_ERROR", 999.0)
+                    if isinstance(fe, float) and math.isnan(fe):
+                        fe = 999.0
+                    if fe < best_fe:
+                        best_fe = fe
+                        best_seed = str(bs_file)
+
+    if best_seed is not None:
+        print(
+            f"Seed matched: FE={best_fe:.6f} path={best_seed}",
+            file=sys.stderr,
+        )
+        return best_seed
 
     # No seed found — auto-run Stage 2 to generate one
     print(

@@ -37,7 +37,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # AWS config
 REGION = "us-east-1"
-INSTANCE_TYPE = "c5ad.4xlarge"
+INSTANCE_TYPE = "c5ad.8xlarge"
 KEY_NAME = "columbia-profile"
 KEY_PATH = Path.home() / ".ssh" / "columbia-profile.pem"
 SECURITY_GROUP = "sg-0e893f0974d736f2b"
@@ -55,12 +55,12 @@ REMOTE_SOLVER_SS = f"{REMOTE_SIMSOPT}/examples/single_stage_optimization/SINGLE_
 
 # Local state
 STATE_FILE = Path("/tmp/hbt_autoresearch/aws_instance.json")
-COST_PER_HOUR = 0.69  # c5ad.4xlarge on-demand
-COST_LIMIT = 10.0  # Auto-stop after this many dollars
+COST_PER_HOUR = 1.38  # c5ad.8xlarge on-demand
+COST_LIMIT = 20.0  # Auto-stop after this many dollars
 
-# Parallel config: 8 threads per run on 16 vCPU (c5ad.4xlarge) = 2 parallel runs
-THREADS_PER_RUN = 8
-MAX_PARALLEL = 2
+# Parallel config: 32 vCPU (c5ad.8xlarge) — use all cores for one mpol=18 run
+THREADS_PER_RUN = 30
+MAX_PARALLEL = 1
 
 
 def aws(*args: str) -> str:
@@ -230,6 +230,34 @@ def cmd_launch(args: list[str]) -> None:
         time.sleep(5)
         print(".", end="", flush=True)
     print(" ready.")
+    # Install idle watchdog: auto-shutdown if no python process for 30 min
+    try:
+        ssh(
+            ip,
+            "echo '#!/bin/bash\n"
+            "# Auto-shutdown if no python solver process running for 30 min\n"
+            "if ! pgrep -f 'single_stage_banana\\|banana_coil_solver' > /dev/null; then\n"
+            "  if [ -f /tmp/idle_since ]; then\n"
+            "    idle_start=$(cat /tmp/idle_since)\n"
+            "    now=$(date +%s)\n"
+            "    idle_sec=$((now - idle_start))\n"
+            '    if [ "$idle_sec" -gt 1800 ]; then\n'
+            '      echo "Idle for ${idle_sec}s, shutting down" >> /var/log/idle_watchdog.log\n'
+            "      sudo shutdown -h now\n"
+            "    fi\n"
+            "  else\n"
+            "    date +%s > /tmp/idle_since\n"
+            "  fi\n"
+            "else\n"
+            "  rm -f /tmp/idle_since\n"
+            "fi' > /tmp/idle_watchdog.sh && chmod +x /tmp/idle_watchdog.sh && "
+            "(crontab -l 2>/dev/null; echo '*/5 * * * * /tmp/idle_watchdog.sh') | sort -u | crontab -",
+            timeout=15,
+        )
+        print("Idle watchdog installed (auto-shutdown after 30 min idle).")
+    except Exception:
+        print("Warning: could not install idle watchdog.")
+
     print(f"\nSSH: ssh -i {KEY_PATH} {REMOTE_USER}@{ip}")
     print(f"Setup: ssh -i {KEY_PATH} {REMOTE_USER}@{ip} < scripts/setup_ami.sh")
 
@@ -319,7 +347,23 @@ _JSONL_THREAD_LOCK = __import__("threading").Lock()
 
 EQ_MAP = {
     "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
+    "iota15p": "wout_nfp22ginsburg_desc_iota15.nc",
+    "iota16": "wout_nfp22ginsburg_desc_iota16.nc",
+    "iota17": "wout_nfp22ginsburg_desc_iota17.nc",
+    "iota18": "wout_nfp22ginsburg_desc_iota18.nc",
+    "iota19": "wout_nfp22ginsburg_desc_iota19.nc",
     "iota20": "wout_nfp22ginsburg_000_002084_iota20.nc",
+    "iota20p": "wout_nfp22ginsburg_desc_iota20.nc",
+    "iota21": "wout_nfp22ginsburg_desc_iota21.nc",
+    "iota22": "wout_nfp22ginsburg_desc_iota22.nc",
+    "iota23": "wout_nfp22ginsburg_desc_iota23.nc",
+    "iota24": "wout_nfp22ginsburg_desc_iota24.nc",
+    "iota25": "wout_nfp22ginsburg_desc_iota25.nc",
+    "iota26": "wout_nfp22ginsburg_desc_iota26.nc",
+    "iota27": "wout_nfp22ginsburg_desc_iota27.nc",
+    "iota28": "wout_nfp22ginsburg_desc_iota28.nc",
+    "iota29": "wout_nfp22ginsburg_desc_iota29.nc",
+    "iota30": "wout_nfp22ginsburg_desc_iota30.nc",
     "001490": "wout_nfp22ginsburg_000_001490.nc",
 }
 

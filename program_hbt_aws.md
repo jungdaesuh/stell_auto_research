@@ -61,8 +61,8 @@ Read `results.jsonl` and look at the local agent's Stage 2 frontiers. Your job:
 
 1. **Validate Stage 2 breakthroughs in single-stage** — does the best Stage 2 coil produce good QS fields?
 2. **Explore single-stage weight space** — `res_weight`, `iotas_weight`, `surf_dist_weight`, `curvature_weight` are all tunable. The local agent doesn't touch these.
-3. **Try different iota targets** — 0.15, 0.17, 0.20, 0.25. Single-stage is where iota target matters.
-4. **Try different equilibria in single-stage** — iota20 and 001490 may need different curvature weights.
+3. **Try different iota targets** — 0.15 through 0.30 in 0.01 steps. Match equilibrium to target (e.g., `--equilibrium iota17` with `--iota-target 0.17`). Single-stage is where iota target matters.
+4. **Try different equilibria in single-stage** — 16 DESC-generated equilibria (iota15–iota30) plus 001490 are available. Closely matched equilibria improve initialization.
 5. **Don't duplicate Stage 2 work** — the local agent does that. Only run Stage 2 here if you need to generate a seed that doesn't exist yet.
 
 ## Scoring
@@ -75,15 +75,37 @@ Same as local agent:
 
 ## Operational Notes
 
-- **Cost**: c5ad.4xlarge at ~$0.69/hr. Stop when done: `python scripts/aws_run.py stop`
+- **Cost**: c5ad.8xlarge at ~$1.38/hr. Stop when done: `python scripts/aws_run.py stop`. Instance auto-shuts down after 30 min idle.
 - **Seed sync**: Re-sync seeds periodically if the local agent generates new ones:
   ```bash
   scp -i ~/.ssh/columbia-profile.pem -r stage2_seeds/ ubuntu@<IP>:/home/ubuntu/
   ```
 - **Single-stage runtime**: 10-30 min per run at mpol=8. Use `--timeout 1800`.
 - **Boozer init crashes**: Some seeds produce surfaces that fold. If a seed crashes, try a different one. The crash is instant (pre-checked locally, but no pre-check on remote yet).
-- **Parallel limit**: 2 runs at a time on c5ad.4xlarge (8 threads each on 16 cores).
+- **Parallel limit**: 1 run at a time on c5ad.8xlarge (30 threads on 32 cores). For high-mpol runs, dedicate all cores to one run.
 - **Results are shared**: Both agents write to the same `results.jsonl`. Check `"source"` field to see who did what.
+
+## Research Landscape
+
+What we know from 369 runs so far:
+- Single-stage crashes ~25% of the time. Whether a seed crashes is not deterministic — the same seed can succeed or fail depending on other parameters.
+- Stage 2 field error does NOT predict single-stage success. Low-error seeds crash; high-error seeds sometimes converge.
+- Stage 2 is overwhelmingly order=4. Single-stage is overwhelmingly order=2. 72 high-scoring Stage 2 seeds at order=4 have never been tested in single-stage.
+- 19 equilibrium files exist (iota 15-30). Most exploration has concentrated on iota15 and iota20. Equilibrium 001490 has Stage 2 seeds but zero single-stage attempts.
+- Basin-hopping is implemented and available (`--basin-hops`, `--basin-stepsize`, `--basin-seed`) but has rarely been used.
+- Stage 2 field error is bimodal: ~40% of passing runs get trapped in a 0.04-0.05 local minimum.
+- When single-stage crashes, the crash reason and run directory are logged to results.jsonl. Use this feedback.
+
+## Principles
+
+- Information has diminishing returns. When repeated runs in a region stop teaching you something new, that is a signal.
+- Crashes and failures carry information. A pattern of failures is more informative than a single success.
+- The ratio between cheap exploration (Stage 2, ~30s) and expensive refinement (single-stage, ~10-30min) is a choice you control.
+- Resources are finite. Every run has an opportunity cost.
+
+## Self-Reflection
+
+When you notice a pattern — a streak of crashes, a plateau in scores, or repeated configs — pause. Review your run history. Ask: What has my hit rate been? What parameter space have I covered versus what exists? What is the biggest gap in my knowledge, and what is the cheapest experiment that would close it? Then adjust.
 
 ## The Experiment Loop
 

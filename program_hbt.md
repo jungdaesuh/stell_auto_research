@@ -53,15 +53,31 @@ J = NonQSRatio
 
 ## Equilibria and Targets
 
-Three equilibrium files are available as starting plasma surfaces:
+17 equilibrium files are available, covering iota 0.15–0.30 in steps of 0.01:
 
-| Shorthand | File |
-|-----------|------|
-| `iota15` | `wout_nfp22ginsburg_000_014417_iota15.nc` |
-| `iota20` | `wout_nfp22ginsburg_000_002084_iota20.nc` |
-| `001490` | `wout_nfp22ginsburg_000_001490.nc` |
+| Shorthand | Axis iota | Source |
+|-----------|-----------|--------|
+| `iota15` | 0.1466 | VMEC (original, has seeds) |
+| `iota15p` | 0.1500 | DESC (precise, no seeds yet) |
+| `iota16` | 0.1600 | DESC |
+| `iota17` | 0.1700 | DESC |
+| `iota18` | 0.1800 | DESC |
+| `iota19` | 0.1900 | DESC |
+| `iota20` | 0.1980 | VMEC (original, has seeds) |
+| `iota20p` | 0.2000 | DESC (precise, no seeds yet) |
+| `iota21` | 0.2100 | DESC |
+| `iota22` | 0.2200 | DESC |
+| `iota23` | 0.2300 | DESC |
+| `iota24` | 0.2400 | DESC |
+| `iota25` | 0.2500 | DESC |
+| `iota26` | 0.2600 | DESC |
+| `iota27` | 0.2700 | DESC |
+| `iota28` | 0.2800 | DESC |
+| `iota29` | 0.2900 | DESC |
+| `iota30` | 0.3000 | DESC |
+| `001490` | 0.2973 | VMEC (original) |
 
-These define the plasma geometry. Within each, `--major-radius` and `--toroidal-flux` are continuous — explore freely. For single-stage, `--iota-target` is also continuous (0.10 to 0.25 or beyond) and independent of the equilibrium name. The names "iota15" and "iota20" are labels for the equilibrium file, not constraints on what iota you can target.
+Match the equilibrium to your `--iota-target` for best results (e.g., use `iota17` with `--iota-target 0.17`). Within each, `--major-radius` and `--toroidal-flux` are continuous — explore freely.
 
 ## Running an Experiment
 
@@ -239,6 +255,28 @@ wc -l results.jsonl
 ```
 
 Archived data (`results_pre_hardware_limits.*`) contains prior runs before hardware enforcement. Read for patterns only.
+
+## Research Landscape
+
+What we know from 369 runs so far:
+- Single-stage crashes ~25% of the time. Whether a seed crashes is not deterministic — the same seed can succeed or fail depending on other parameters.
+- Stage 2 field error does NOT predict single-stage success. Low-error seeds crash; high-error seeds sometimes converge.
+- Stage 2 is overwhelmingly order=4. Single-stage is overwhelmingly order=2. 72 high-scoring Stage 2 seeds at order=4 have never been tested in single-stage.
+- 19 equilibrium files exist (iota 15-30). Most exploration has concentrated on iota15 and iota20. Equilibrium 001490 has Stage 2 seeds but zero single-stage attempts.
+- Basin-hopping is implemented and available (`--basin-hops`, `--basin-stepsize`, `--basin-seed`) but has rarely been used.
+- Stage 2 field error is bimodal: ~40% of passing runs get trapped in a 0.04-0.05 local minimum.
+- When single-stage crashes, the crash reason and run directory are logged to results.jsonl. Use this feedback.
+
+## Principles
+
+- Information has diminishing returns. When repeated runs in a region stop teaching you something new, that is a signal.
+- Crashes and failures carry information. A pattern of failures is more informative than a single success.
+- The ratio between cheap exploration (Stage 2, ~30s) and expensive refinement (single-stage, ~10-30min) is a choice you control.
+- Resources are finite. Every run has an opportunity cost.
+
+## Self-Reflection
+
+When you notice a pattern — a streak of crashes, a plateau in scores, or repeated configs — pause. Review your run history. Ask: What has my hit rate been? What parameter space have I covered versus what exists? What is the biggest gap in my knowledge, and what is the cheapest experiment that would close it? Then adjust.
 
 ## The Experiment Loop
 
