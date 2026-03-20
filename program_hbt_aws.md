@@ -8,17 +8,13 @@ You are an autonomous researcher running single-stage physics validation on AWS.
 
 1. **Set working directory**: `cd /Users/suhjungdae/code/opensource/autoresearch`
 2. **Read this file** completely.
-3. **Read `results.jsonl`** — shared with the local agent. Filter by `"source": "local"` vs `"source": "aws"` to see who did what.
-
-   **IMPORTANT**: Prior data is archived in `results_pre_hardware_limits.jsonl` (150+ runs) and `results_pre_hardware_limits.tsv` (200+ runs). Many Stage 2 runs used `cc_threshold < 0.05` — below the baseline default floor now enforced. Read for patterns but don't replicate those configs. Single-stage results with `cc_dist=0.05` are still valid references.
-   ```bash
-   # Your runs
-   grep '"source": "aws"' results.jsonl | wc -l
-   # Local agent's runs
-   grep '"source": "local"' results.jsonl | wc -l
-   # Best single-stage results
-   cat results.jsonl | python3 -c "import json,sys; runs=[json.loads(l) for l in sys.stdin]; ss=[r for r in runs if r.get('solver')=='single-stage' and r.get('status')=='pass']; ss.sort(key=lambda r: r.get('field_error',999)); [print(f'FE={r[\"field_error\"]:.6f} score={r[\"score\"]} eq={r[\"equilibrium\"]} src={r.get(\"source\",\"?\")}') for r in ss[:5]]"
-   ```
+3. **Query the experiment space** — shared with the local agent. Use `lab.py` (not raw JSONL):
+   Use `lab.py` — see the full subcommand reference in `program_hbt.md`. The most useful for your role:
+   - `lab.py suggest --budget <N> --solver single-stage` — what to validate next
+   - `lab.py frontier --solver stage2` — local agent's best seeds to pick from
+   - `lab.py check --eq <eq> --cw <cw> --order <N>` — don't re-run tried combos
+   - `lab.py coverage --solver single-stage` — what's been validated so far
+   **IMPORTANT**: Prior data is archived in `results_pre_hardware_limits.jsonl` and `.tsv`. Many Stage 2 runs used `cc_threshold < 0.05` — below the floor now enforced. Single-stage results with `cc_dist=0.05` are still valid references.
 4. **Check AWS instance is running**:
    ```bash
    python scripts/aws_run.py status
@@ -57,7 +53,7 @@ ssh -i ~/.ssh/columbia-profile.pem ubuntu@<IP> 'find /home/ubuntu/stage2_seeds -
 
 ## What To Focus On
 
-Read `results.jsonl` and look at the local agent's Stage 2 frontiers. Your job:
+Use `lab.py frontier --solver stage2` to see the local agent's Stage 2 frontiers. Your job:
 
 1. **Validate Stage 2 breakthroughs in single-stage** — does the best Stage 2 coil produce good QS fields?
 2. **Explore single-stage weight space** — `res_weight`, `iotas_weight`, `surf_dist_weight`, `curvature_weight` are all tunable. The local agent doesn't touch these.
@@ -113,12 +109,16 @@ When you notice a pattern — a streak of crashes, a plateau in scores, or repea
 
 LOOP FOREVER:
 
-1. **Read results.jsonl.** Look at what the local agent has found. Identify Stage 2 breakthroughs that haven't been validated in single-stage yet.
+1. **Query the experiment space.** Use lab.py to find what needs validation:
+   - `python scripts/lab.py suggest --budget 3 --solver single-stage` — what to try next
+   - `python scripts/lab.py frontier --solver stage2 --top 10` — local agent's best seeds
+   - `python scripts/lab.py coverage --solver single-stage` — what's been validated
 2. **Sync seeds if needed**: `scp -i ~/.ssh/columbia-profile.pem -r stage2_seeds/ ubuntu@<IP>:/home/ubuntu/`
-3. **Propose a batch of 2 single-stage experiments.**
-4. **Run**: `python scripts/aws_run.py batch "..." "..."`
-5. **Read results.** Compare with local agent's findings.
-6. **Repeat.** Never stop. Never ask.
+3. **Check before launching**: `python scripts/lab.py check --eq <eq> --cw <cw> --order <order>` — don't re-run combos.
+4. **Propose a batch of 2 single-stage experiments.**
+5. **Run**: `python scripts/aws_run.py batch "..." "..."`
+6. **Read results.** Compare with local agent's findings.
+7. **Repeat.** Never stop. Never ask.
 
 **NEVER STOP.** Each run takes 10-30 minutes. You can do ~2-4 runs per hour. Keep validating, keep exploring the single-stage weight space. If all seeds crash, run Stage 2 on AWS to generate fresh seeds.
 

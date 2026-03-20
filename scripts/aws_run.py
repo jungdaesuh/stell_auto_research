@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AWS EC2 runner for HBT autoresearch — launch, batch dispatch, stop.
+"""AWS EC2 runner for HBT autoresearch — launch, batch dispatch, download, stop.
 
 Usage:
     # Launch an EC2 instance
@@ -15,6 +15,9 @@ Usage:
         "--cc-weight 48" \
         "--cc-weight 50"
 
+    # Download mpol ramp results and logs from EC2
+    python scripts/aws_run.py download
+
     # Check instance status
     python scripts/aws_run.py status
 
@@ -24,6 +27,7 @@ Usage:
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import subprocess
@@ -56,7 +60,7 @@ REMOTE_SOLVER_SS = f"{REMOTE_SIMSOPT}/examples/single_stage_optimization/SINGLE_
 # Local state
 STATE_FILE = Path("/tmp/hbt_autoresearch/aws_instance.json")
 COST_PER_HOUR = 1.38  # c5ad.8xlarge on-demand
-COST_LIMIT = 20.0  # Auto-stop after this many dollars
+COST_LIMIT = 50.0  # Auto-stop after this many dollars
 
 # Parallel config: 32 vCPU (c5ad.8xlarge) — use all cores for one mpol=18 run
 THREADS_PER_RUN = 30
@@ -290,6 +294,84 @@ def cmd_stop(args: list[str]) -> None:
     print("Terminated.")
 
 
+def cmd_download(args: list[str]) -> None:
+    """Download mpol ramp results and logs from EC2 to local."""
+    ip = get_ip()
+
+    backup_dir = REPO_ROOT / "ec2_backups" / time.strftime("%Y%m%d_%H%M%S")
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    remote_home = f"/home/{REMOTE_USER}"
+
+    # Discover what's on the remote (match both mpol_ramp_results* and mpol_ramp_*_results*)
+    listing, _, _ = ssh(
+        ip,
+        f"find {remote_home} -maxdepth 1 -name 'mpol_ramp*results*' -type d 2>/dev/null; "
+        f"find {remote_home} -maxdepth 1 -name 'mpol_ramp*.log' -type f 2>/dev/null; "
+        f"find {remote_home} -maxdepth 1 -name 'iota*_retry.log' -type f 2>/dev/null",
+        timeout=15,
+    )
+    if not listing.strip():
+        print("No ramp results found on EC2.")
+        return
+
+    print(f"Downloading to {backup_dir} ...")
+
+    # Separate directories and files
+    result_dirs = []
+    log_files = []
+    for line in listing.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.endswith(".log"):
+            log_files.append(line)
+        else:
+            result_dirs.append(line)
+
+    # Download result directories
+    for rdir in result_dirs:
+        dirname = Path(rdir).name
+        local_dest = backup_dir / dirname
+        print(f"  {dirname} ...", end=" ", flush=True)
+        rc = subprocess.run(
+            [
+                "scp", "-i", str(KEY_PATH), "-o", "StrictHostKeyChecking=no",
+                "-r", f"{REMOTE_USER}@{ip}:{rdir}", str(local_dest),
+            ],
+            capture_output=True, text=True,
+        ).returncode
+        print("ok" if rc == 0 else "FAILED")
+
+    # Download logs
+    for lf in log_files:
+        fname = Path(lf).name
+        print(f"  {fname} ...", end=" ", flush=True)
+        rc = subprocess.run(
+            [
+                "scp", "-i", str(KEY_PATH), "-o", "StrictHostKeyChecking=no",
+                f"{REMOTE_USER}@{ip}:{lf}", str(backup_dir / fname),
+            ],
+            capture_output=True, text=True,
+        ).returncode
+        print("ok" if rc == 0 else "FAILED")
+
+    # Show checkpoint summaries if available
+    ckpt_files = list(backup_dir.rglob("checkpoints/*.json"))
+    if ckpt_files:
+        print("\nCheckpoint summary:")
+        for cf in sorted(ckpt_files):
+            cp = json.loads(cf.read_text())
+            status = "FAIL" if cp.get("status") == "failed" else (
+                "SI!" if cp.get("self_intersecting") else "ok"
+            )
+            fe = cp.get("field_error", "?")
+            print(f"  mpol={cp['mpol']}: FE={fe} [{status}] @ {cp.get('completed_at', '?')}")
+
+    total = sum(f.stat().st_size for f in backup_dir.rglob("*") if f.is_file())
+    print(f"\nTotal downloaded: {total / 1024 / 1024:.1f} MB → {backup_dir}")
+
+
 def cmd_run(args: list[str]) -> None:
     """Run a single experiment on the remote instance."""
     ip = get_ip()
@@ -371,6 +453,27 @@ EQ_MAP = {
 _META_ARGS = {"--solver", "--equilibrium", "--timeout"}
 
 _SAFE_ARG_PATTERN = re.compile(r"^[a-zA-Z0-9._/=\-]+$")
+
+
+def _aws_error(
+    solver: str, equilibrium: str, feedback: str, elapsed: float = 0.0,
+) -> dict:
+    """Build a structured crash record matching run_one.py's _emit_error format."""
+    return {
+        "source": "aws",
+        "solver": solver,
+        "equilibrium": equilibrium,
+        "status": "crash",
+        "score": 0.0,
+        "field_error": None,
+        "self_intersecting": None,
+        "max_curvature": None,
+        "iterations": None,
+        "elapsed": round(elapsed, 1),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "feedback": feedback,
+        "params": {},
+    }
 
 
 def _parse_and_sanitize(extra_args: str) -> tuple[str, str, str, int, str]:
@@ -474,14 +577,7 @@ def _run_remote(ip: str, extra_args: str) -> str:
                 feedback += "Surface folds — seed incompatible. Try a different seed."
             else:
                 feedback += pre_out[-300:]
-            error_output = {
-                "source": "aws",
-                "solver": solver,
-                "equilibrium": equilibrium,
-                "status": "crash",
-                "score": 0.0,
-                "feedback": feedback,
-            }
+            error_output = _aws_error(solver, equilibrium, feedback)
             with _JSONL_THREAD_LOCK:
                 _append_jsonl(error_output)
             return json.dumps(error_output)
@@ -544,8 +640,9 @@ def _run_remote(ip: str, extra_args: str) -> str:
                     "max_curvature": metrics.get("MAX_CURVATURE"),
                     "iterations": metrics.get("iterations"),
                     "elapsed": round(elapsed, 1),
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "params": {
-                        k: v
+                        k.lower(): v
                         for k, v in metrics.items()
                         if k
                         not in (
@@ -583,43 +680,29 @@ def _run_remote(ip: str, extra_args: str) -> str:
                     output["target_volume"] = metrics.get("TARGET_VOLUME")
                     output["nonqs_ratio"] = metrics.get("NONQS_RATIO")
                     output["boozer_residual"] = metrics.get("BOOZER_RESIDUAL")
+                    output["stage2_seed_path"] = metrics.get("STAGE2_BS_PATH")
 
                 with _JSONL_THREAD_LOCK:
                     _append_jsonl(output)
                 return json.dumps(output)
 
-        error_output: dict = {
-            "source": "aws",
-            "solver": solver,
-            "equilibrium": equilibrium,
-            "status": "crash",
-            "score": 0.0,
-            "feedback": f"no JSON in output: {raw[-200:]}",
-        }
+        error_output = _aws_error(
+            solver, equilibrium, f"no JSON in output: {raw[-200:]}", elapsed,
+        )
         with _JSONL_THREAD_LOCK:
             _append_jsonl(error_output)
         return json.dumps(error_output)
     except subprocess.TimeoutExpired:
-        error_output = {
-            "source": "aws",
-            "solver": solver,
-            "equilibrium": equilibrium,
-            "status": "crash",
-            "score": 0.0,
-            "feedback": "timeout",
-        }
+        error_output = _aws_error(
+            solver, equilibrium, "timeout", time.monotonic() - t0,
+        )
         with _JSONL_THREAD_LOCK:
             _append_jsonl(error_output)
         return json.dumps(error_output)
     except Exception as exc:
-        error_output = {
-            "source": "aws",
-            "solver": solver,
-            "equilibrium": equilibrium,
-            "status": "crash",
-            "score": 0.0,
-            "feedback": str(exc),
-        }
+        error_output = _aws_error(
+            solver, equilibrium, str(exc), time.monotonic() - t0,
+        )
         with _JSONL_THREAD_LOCK:
             _append_jsonl(error_output)
         return json.dumps(error_output)
@@ -639,6 +722,7 @@ def main() -> None:
         "stop": cmd_stop,
         "run": cmd_run,
         "batch": cmd_batch,
+        "download": cmd_download,
     }
 
     if command not in commands:

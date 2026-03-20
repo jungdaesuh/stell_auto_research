@@ -107,7 +107,7 @@ Output is one line of JSON to stdout (also auto-appended to `results.jsonl`):
 {"source": "local", "solver": "stage2", "equilibrium": "iota15", "status": "pass", "score": 0.7596, "field_error": 0.01194, "self_intersecting": false, "max_curvature": 30.54, "iterations": 320, "elapsed": 42.3, "params": {"cc_weight": 44.0, "curvature_threshold": 30.0, ...}}
 ```
 
-Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
+Every record includes a UTC `timestamp`. Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`, and `stage2_seed_path` (the Stage 2 seed that was used).
 
 On crash: the run directory is preserved for debugging. The JSON includes `run_dir` path and last 30 lines of the solver log.
 
@@ -136,16 +136,18 @@ If you need deeper interpretation (magnetic islands, resonances, KAM surfaces), 
 
 ### Stage 2 Seeds for Single-Stage
 
-Single-stage requires a `biot_savart_opt.json` from a completed Stage 2 run as its starting coil. `run_one.py` handles this automatically:
+Single-stage requires a `biot_savart_opt.json` from a completed Stage 2 run as its starting coil.
 
 - Every Stage 2 run persists its seed to `stage2_seeds/`.
-- When you run single-stage, `run_one.py` searches `stage2_seeds/` and Columbia DATABASE for a matching seed.
-- If no match exists, it auto-runs Stage 2 first to generate one.
-- You can also pass `--stage2-bs-path /path/to/biot_savart_opt.json` explicitly.
+- When you run single-stage without `--stage2-bs-path`, `run_one.py` auto-finds the best matching seed (by equilibrium + major_radius + order, lowest field error).
+- If no match exists, the run fails with instructions to run Stage 2 first.
+- You can pass `--stage2-bs-path /path/to/biot_savart_opt.json` explicitly for full control.
 
-To list available seeds:
-```bash
-find stage2_seeds -name results.json | while read f; do python3 -c "import json; r=json.load(open('$f')); print(f'FE={r[\"FIELD_ERROR\"]:.6f} O={r[\"order\"]} {f}')"; done | sort -n | head -10
+To browse available seeds (scans both `stage2_seeds/` and Columbia DATABASE):
+```
+lab.py seeds --eq <eq>                    # all seeds for an equilibrium
+lab.py seeds --eq <eq> --order <N>        # filter by order
+lab.py seeds --eq <eq> --best             # single lowest-FE seed
 ```
 
 ### All Parameters
@@ -287,21 +289,33 @@ Read these to understand the landscape, but all new runs go to `results.jsonl`.
 - 001490 has Stage 2 seeds but single-stage has not been successfully run — Boozer surface may crash.
 - Each equilibrium needs its own exploration — weight optima don't transfer directly.
 
-## Logging Results
+## Logging & Querying Results
 
-`run_one.py` automatically appends every result to `results.jsonl` (one JSON object per line). Each record includes full input params + output metrics + score. You do NOT need to manually log results.
+`run_one.py` automatically appends every result to `results.jsonl` (one JSON object per line). Each record includes full input params + output metrics + score + timestamp. You do NOT need to manually log results.
 
-To review past experiments:
-```bash
-# All results
-cat results.jsonl | python3 -c "import json,sys; [print(f'{json.loads(l)[\"solver\"]}/{json.loads(l)[\"equilibrium\"]} FE={json.loads(l)[\"field_error\"]} score={json.loads(l)[\"score\"]} SI={json.loads(l)[\"self_intersecting\"]}') for l in sys.stdin]"
+**Use `scripts/lab.py` to query the experiment space.** Do NOT parse `results.jsonl` manually — lab.py builds an in-memory SQLite index and answers questions efficiently. Available subcommands:
 
-# Best non-SI results (by objective_J if available, else field_error)
-cat results.jsonl | python3 -c "import json,sys; runs=[json.loads(l) for l in sys.stdin]; good=[r for r in runs if r.get('status')=='pass']; good.sort(key=lambda r: r.get('objective_J') or r.get('field_error',999)); [print(f'J={r.get(\"objective_J\",\"?\"):.6g} FE={r[\"field_error\"]:.6f} solver={r[\"solver\"]} eq={r[\"equilibrium\"]}') for r in good[:10]]"
-
-# Count runs
-wc -l results.jsonl
 ```
+lab.py check   --eq <eq> [--cw <cw>] [--order <N>]        Has this combo been tried?
+lab.py suggest  --budget <N> [--solver <solver>]            What should I try next?
+lab.py frontier [--eq <eq>] [--solver <solver>] [--top <N>] Best results (Pareto frontier)
+lab.py coverage [--solver <solver>]                         What's been explored? (heatmap)
+lab.py history  --eq <eq> [--order <N>]                     What combos tried for this eq?
+lab.py crashes  [--eq <eq>]                                 Crash/failure patterns and causes
+lab.py nearby   --eq <eq> --cw <cw> [--ct <ct>]             Experiments near a param point
+lab.py diff     --eq <eq1> --eq2 <eq2>                      Compare two equilibria
+lab.py param-effect --param <name> [--eq <eq>]              How does a param affect outcomes?
+```
+
+Use your judgment about which subcommands to call — `suggest` and `check` are the most important. The others are for when you need to investigate a specific question about the landscape.
+
+For ad-hoc questions none of the subcommands answer, write SQL directly:
+```bash
+python scripts/lab.py schema                              # see column names
+python scripts/lab.py sql "SELECT ... FROM runs WHERE ..."  # any SELECT query
+```
+
+**CRITICAL: Before launching ANY run, use `lab.py check` with the params you plan to use.** If it says "FOUND N runs" — don't re-run it. Pick something unexplored.
 
 Archived data (`results_pre_hardware_limits.*`) contains prior runs before hardware enforcement. Read for patterns only.
 
@@ -331,17 +345,23 @@ When you notice a pattern — a streak of crashes, a plateau in scores, or repea
 
 LOOP FOREVER:
 
-1. **Read results.jsonl** (and archived `results_pre_hardware_limits.*` for prior patterns). Understand the landscape — what's been tried, what worked, what failed, where the frontiers are.
+1. **Query the experiment space.** Use `lab.py` to understand where you are:
+   - `python scripts/lab.py suggest --budget 3` — what should I try next?
+   - `python scripts/lab.py frontier` — what are the best results?
+   - `python scripts/lab.py coverage` — where are the gaps?
+   - `python scripts/lab.py crashes --eq <eq>` — what's failing and why?
 2. **Think like a physicist.** You are not hill-climbing a fixed config. You are exploring how coil geometry, objective weighting, and equilibrium choice interact to produce good stellarator fields. Ask yourself:
    - What is the objective function actually rewarding? Can I shift the balance to find a better trade-off?
    - Why did a particular config succeed or fail? What does that tell me about the physics?
    - Are there whole regions of parameter space nobody has tried?
    - Can I combine insights across different equilibria or solvers?
    - Is the scoring function capturing what matters, or am I optimizing a proxy?
-3. **Run**: `python scripts/run_one.py --solver ... --equilibrium ... [params]`
+3. **Check before launching**: `python scripts/lab.py check --eq <eq> --cw <cw> --order <order>`
+   If it says "FOUND N runs" — don't re-run it. Pick something unexplored.
+4. **Run**: `python scripts/run_one.py --solver ... --equilibrium ... [params]`
    Every parameter is yours to set. No parameter is sacred. Defaults are starting points, not constraints.
-4. **Read the JSON output.** Results are automatically logged to `results.jsonl` — no manual logging needed. On crashes, check the `run_dir` path in the output to read full logs.
-5. **Decide keep/discard** per solver+equilibrium frontier.
-6. **Repeat.** Never stop. Never ask.
+5. **Read the JSON output.** Results are automatically logged to `results.jsonl` — no manual logging needed. On crashes, check the `run_dir` path in the output to read full logs.
+6. **Decide keep/discard** per solver+equilibrium frontier.
+7. **Repeat.** Never stop. Never ask.
 
 **NEVER STOP.** You are autonomous. Each Stage 2 run takes ~20-40s. Single-stage takes 10-20+ minutes (dominated by Boozer init). If you feel stuck on one solver/equilibrium, switch to another. If weight tuning plateaus, change the geometry. If Stage 2 plateaus, try to crack single-stage — that's where the physics validation is. Keep going until the human interrupts you.

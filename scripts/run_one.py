@@ -19,6 +19,7 @@ parsing, scoring, and cleanup so the agent never touches the filesystem.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import math
 import os
@@ -349,9 +350,9 @@ def _run_experiment(args: argparse.Namespace) -> None:
     env["MKL_NUM_THREADS"] = str(args.omp_threads)
     env["OPENBLAS_NUM_THREADS"] = str(args.omp_threads)
 
-    # Single-stage pre-check: run --init-only first (seconds) to verify Boozer init works.
-    # Saves 10-30 minutes on runs that would crash during init.
-    if args.solver == "single-stage":
+    # Single-stage pre-check: run --init-only first to verify Boozer init works.
+    # Skip pre-check when explicit seed path is given (user knows what they're doing).
+    if args.solver == "single-stage" and not args.stage2_bs_path:
         precheck_dir = OUTPUT_BASE / f"precheck_{int(time.time() * 1000)}"
         precheck_dir.mkdir(parents=True, exist_ok=True)
         precheck_args = cli_args + ["--init-only", "--output-root", str(precheck_dir)]
@@ -364,7 +365,7 @@ def _run_experiment(args: argparse.Namespace) -> None:
                     stdout=lf,
                     stderr=subprocess.STDOUT,
                     env=env,
-                    timeout=120,
+                    timeout=180,
                 )
             if precheck.returncode != 0:
                 tail = ""
@@ -381,7 +382,7 @@ def _run_experiment(args: argparse.Namespace) -> None:
                 shutil.rmtree(precheck_dir, ignore_errors=True)
                 return
         except subprocess.TimeoutExpired:
-            _emit_error("Boozer init pre-check timed out after 120s", 0.0, args)
+            _emit_error("Boozer init pre-check timed out after 180s", 0.0, args)
             shutil.rmtree(precheck_dir, ignore_errors=True)
             return
         finally:
@@ -460,6 +461,7 @@ def _run_experiment(args: argparse.Namespace) -> None:
         "max_curvature": metrics.get("MAX_CURVATURE"),
         "iterations": metrics.get("iterations"),
         "elapsed": round(elapsed, 1),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "params": _extract_params(args),
     }
 
@@ -475,6 +477,10 @@ def _run_experiment(args: argparse.Namespace) -> None:
         output["target_volume"] = metrics.get("TARGET_VOLUME")
         output["nonqs_ratio"] = metrics.get("NONQS_RATIO")
         output["boozer_residual"] = metrics.get("BOOZER_RESIDUAL")
+        # Log which Stage 2 seed was used (resolved or explicit)
+        seed = getattr(args, "_resolved_seed_path", None) or args.stage2_bs_path
+        if seed:
+            output["stage2_seed_path"] = seed
 
     # For Stage 2: persist all runs as seeds for single-stage
     if args.solver == "stage2":
@@ -532,25 +538,21 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
     """Find a Stage 2 biot_savart_opt.json matching the seed params.
 
     Searches: explicit --stage2-bs-path, then stage2_seeds/, then Columbia DATABASE.
-    If no seed exists, runs Stage 2 automatically and returns the new seed path.
+    Matches on equilibrium (directory) + major_radius + order, picks lowest field error.
+    Returns None with a stderr diagnostic if no seed is found.
     """
     if args.stage2_bs_path:
         if Path(args.stage2_bs_path).is_file():
             return args.stage2_bs_path
         print(
-            json.dumps(
-                {
-                    "status": "crash",
-                    "score": 0.0,
-                    "feedback": f"stage2-bs-path not found: {args.stage2_bs_path}",
-                }
-            ),
+            f"stage2-bs-path not found: {args.stage2_bs_path}",
+            file=sys.stderr,
         )
         return None
 
     plasma_dir = f"outputs-{plasma_surf}"
 
-    # Search stage2_seeds/ (autoresearch runs) — solver uses R0/s/CCT/CT format
+    # Search stage2_seeds/ (autoresearch runs) then Columbia DATABASE
     # Collect all matching seeds and pick the one with lowest field error
     best_seed = None
     best_fe = float("inf")
@@ -563,36 +565,16 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
             results_file = seed_dir / "results.json"
             if not bs_file.is_file():
                 continue
-            # Match by checking results.json params
+            # Match on geometry essentials only: equilibrium (implicit from
+            # directory), major_radius, and order. The single-stage optimizer
+            # re-optimizes coil weights anyway — the seed just provides
+            # starting coil geometry. Pick the lowest-FE match.
             if results_file.is_file():
                 with open(results_file) as f:
                     seed_meta = json.load(f)
                 if (
                     abs(seed_meta.get("MAJOR_RADIUS", 0) - args.major_radius) < 0.001
-                    and abs(seed_meta.get("TOROIDAL_FLUX", 0) - args.toroidal_flux)
-                    < 0.001
-                    and abs(seed_meta.get("CC_WEIGHT", 0) - args.cc_weight) < 0.1
-                    and abs(
-                        seed_meta.get("CURVATURE_WEIGHT", 0) - args.curvature_weight
-                    )
-                    < 1e-7
-                    and abs(
-                        seed_meta.get("CC_THRESHOLD", 0.05)
-                        - getattr(args, "cc_threshold", 0.05)
-                    )
-                    < 0.001
-                    and abs(seed_meta.get("LENGTH_WEIGHT", 0.0005) - args.length_weight)
-                    < 1e-7
                     and seed_meta.get("order", 0) == args.order
-                    and abs(
-                        seed_meta.get("banana_surf_radius", 0) - args.banana_surf_radius
-                    )
-                    < 0.001
-                    and abs(
-                        seed_meta.get("CURVATURE_THRESHOLD", 40)
-                        - args.curvature_threshold
-                    )
-                    < 0.1
                 ):
                     fe = seed_meta.get("FIELD_ERROR", 999.0)
                     if isinstance(fe, float) and math.isnan(fe):
@@ -608,55 +590,12 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
         )
         return best_seed
 
-    # No seed found — auto-run Stage 2 to generate one
+    # No seed found — tell the agent to run Stage 2 first
     print(
-        f"No Stage 2 seed found for MR={args.major_radius} TF={args.toroidal_flux} CCW={args.cc_weight} CT={args.curvature_threshold} Order={args.order}. Running Stage 2 first...",
+        f"No Stage 2 seed found for eq={args.equilibrium} MR={args.major_radius} Order={args.order}. "
+        f"Run Stage 2 first, or use: python scripts/lab.py seeds --eq {args.equilibrium}",
         file=sys.stderr,
     )
-    stage2_cmd = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--solver",
-        "stage2",
-        "--equilibrium",
-        args.equilibrium,
-        "--cc-weight",
-        str(args.cc_weight),
-        "--curvature-weight",
-        str(args.curvature_weight),
-        "--curvature-threshold",
-        str(args.curvature_threshold),
-        "--banana-surf-radius",
-        str(args.banana_surf_radius),
-        "--major-radius",
-        str(args.major_radius),
-        "--toroidal-flux",
-        str(args.toroidal_flux),
-        "--order",
-        str(args.order),
-        "--length-weight",
-        str(args.length_weight),
-        "--cc-threshold",
-        str(getattr(args, "cc_threshold", 0.05)),
-        "--maxiter",
-        "400",
-        "--omp-threads",
-        str(args.omp_threads),
-    ]
-    result = subprocess.run(stage2_cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        return None
-
-    # Parse the Stage 2 output for seed path
-    try:
-        stage2_output = json.loads(result.stdout.strip())
-        seed_path = stage2_output.get("stage2_seed_path")
-        if seed_path and Path(seed_path).is_file():
-            print(f"Stage 2 seed generated: {seed_path}", file=sys.stderr)
-            return seed_path
-    except json.JSONDecodeError:
-        pass
-
     return None
 
 
@@ -723,10 +662,12 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.basin_seed),
         ]
     else:
-        # Resolve Stage 2 seed — auto-searches stage2_seeds/, Columbia DATABASE, or runs Stage 2
+        # Resolve Stage 2 seed — searches stage2_seeds/ and Columbia DATABASE
         seed_path = _resolve_stage2_seed(args, plasma_surf)
         if seed_path is None:
             return []  # Will be caught as empty args → crash
+        # Stash on args so the output dict can log which seed was used
+        args._resolved_seed_path = seed_path
 
         cli = common + [
             "--stage2-bs-path",
@@ -854,6 +795,7 @@ def _emit_error(reason: str, elapsed: float, args: argparse.Namespace) -> None:
         "max_curvature": None,
         "iterations": None,
         "elapsed": round(elapsed, 1),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "feedback": reason,
         "params": _extract_params(args),
     }
