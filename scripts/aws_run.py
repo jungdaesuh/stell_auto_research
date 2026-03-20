@@ -563,15 +563,26 @@ def _run_remote(ip: str, extra_args: str) -> str:
                             "STAGE2_RESULTS_PATH",
                             "iterations",
                             "init_only",
+                            "OBJECTIVE_J",
+                            "CURVE_CURVE_MIN_DIST",
+                            "NONQS_RATIO",
+                            "BOOZER_RESIDUAL",
+                            "TARGET_IOTA",
+                            "TARGET_VOLUME",
                         )
                     },
                 }
+
+                output["objective_J"] = metrics.get("OBJECTIVE_J")
+                output["curve_curve_min_dist"] = metrics.get("CURVE_CURVE_MIN_DIST")
 
                 if solver == "single-stage":
                     output["final_iota"] = metrics.get("FINAL_IOTA")
                     output["final_volume"] = metrics.get("FINAL_VOLUME")
                     output["target_iota"] = metrics.get("TARGET_IOTA")
                     output["target_volume"] = metrics.get("TARGET_VOLUME")
+                    output["nonqs_ratio"] = metrics.get("NONQS_RATIO")
+                    output["boozer_residual"] = metrics.get("BOOZER_RESIDUAL")
 
                 with _JSONL_THREAD_LOCK:
                     _append_jsonl(output)

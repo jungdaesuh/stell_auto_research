@@ -463,12 +463,18 @@ def _run_experiment(args: argparse.Namespace) -> None:
         "params": _extract_params(args),
     }
 
+    # Solver objective and physics metrics (new — available when solver writes them)
+    output["objective_J"] = metrics.get("OBJECTIVE_J")
+    output["curve_curve_min_dist"] = metrics.get("CURVE_CURVE_MIN_DIST")
+
     # Single-stage extra fields
     if args.solver == "single-stage":
         output["final_iota"] = metrics.get("FINAL_IOTA")
         output["final_volume"] = metrics.get("FINAL_VOLUME")
         output["target_iota"] = metrics.get("TARGET_IOTA")
         output["target_volume"] = metrics.get("TARGET_VOLUME")
+        output["nonqs_ratio"] = metrics.get("NONQS_RATIO")
+        output["boozer_residual"] = metrics.get("BOOZER_RESIDUAL")
 
     # For Stage 2: persist all runs as seeds for single-stage
     if args.solver == "stage2":
@@ -477,7 +483,9 @@ def _run_experiment(args: argparse.Namespace) -> None:
         if bs_files:
             ts = int(time.time())
             seed_dir = (
-                STAGE2_SEED_STORE / f"outputs-{plasma_surf}" / f"{bs_files[0].parent.name}-{ts}"
+                STAGE2_SEED_STORE
+                / f"outputs-{plasma_surf}"
+                / f"{bs_files[0].parent.name}-{ts}"
             )
             seed_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(bs_files[0], seed_dir / "biot_savart_opt.json")
@@ -493,7 +501,9 @@ def _run_experiment(args: argparse.Namespace) -> None:
             # Append timestamp to directory name so no run overwrites another
             ts = int(time.time())
             artifact_dir = (
-                SINGLE_STAGE_STORE / f"outputs-{plasma_surf}" / f"{ss_files[0].parent.name}-{ts}"
+                SINGLE_STAGE_STORE
+                / f"outputs-{plasma_surf}"
+                / f"{ss_files[0].parent.name}-{ts}"
             )
             artifact_dir.mkdir(parents=True, exist_ok=True)
             src_dir = ss_files[0].parent

@@ -32,10 +32,10 @@ You are an autonomous researcher running single-stage physics validation on AWS.
 
 ## Running Experiments
 
-Use `aws_run.py batch` for parallel dispatch. Each batch runs 2 experiments simultaneously on EC2.
+Use `aws_run.py batch` for dispatch. Runs execute one at a time (all 32 cores per run for maximum speed).
 
 ```bash
-# Single-stage batch (2 parallel)
+# Single-stage batch (sequential, all cores per run)
 python scripts/aws_run.py batch \
   "--solver single-stage --stage2-bs-path /home/ubuntu/stage2_seeds/outputs-wout_nfp22ginsburg_000_014417_iota15.nc/<seed_dir>/biot_savart_opt.json --iota-target 0.15 --vol-target 0.10 --curvature-weight 0.003 --timeout 1800" \
   "--solver single-stage --stage2-bs-path /home/ubuntu/stage2_seeds/outputs-wout_nfp22ginsburg_000_014417_iota15.nc/<seed_dir>/biot_savart_opt.json --iota-target 0.15 --vol-target 0.10 --curvature-weight 0.004 --timeout 1800"
@@ -62,16 +62,18 @@ Read `results.jsonl` and look at the local agent's Stage 2 frontiers. Your job:
 1. **Validate Stage 2 breakthroughs in single-stage** — does the best Stage 2 coil produce good QS fields?
 2. **Explore single-stage weight space** — `res_weight`, `iotas_weight`, `surf_dist_weight`, `curvature_weight` are all tunable. The local agent doesn't touch these.
 3. **Try different iota targets** — 0.15 through 0.30 in 0.01 steps. Match equilibrium to target (e.g., `--equilibrium iota17` with `--iota-target 0.17`). Single-stage is where iota target matters.
-4. **Try different equilibria in single-stage** — 16 DESC-generated equilibria (iota15–iota30) plus 001490 are available. Closely matched equilibria improve initialization.
+4. **Try different equilibria in single-stage** — 19 equilibria available (iota15–iota30 shorthands, iota15p/iota20p for precise DESC versions, 001490). Closely matched equilibria improve initialization.
 5. **Don't duplicate Stage 2 work** — the local agent does that. Only run Stage 2 here if you need to generate a seed that doesn't exist yet.
 
 ## Scoring
 
 Same as local agent:
 
-**Single-stage**: `score = 1 / (1 + 25*FE + 4*|iota_miss| + 8*|vol_miss| + curvature_excess + 5*SI)`
+**`objective_J`** (lower = better) is the solver's combined objective. Use this for comparing runs. The `score` field is a legacy proxy — use `objective_J` for new runs.
 
-**Stage 2**: `score = 1 / (1 + 25*FE + curvature_excess + 5*SI)`
+**Single-stage metrics**: `nonqs_ratio`, `boozer_residual`, `field_error`, `final_iota`, `final_volume`, `curve_curve_min_dist`
+
+**SELF_INTERSECTING = True → always discard.**
 
 ## Operational Notes
 
@@ -87,7 +89,7 @@ Same as local agent:
 
 ## Research Landscape
 
-What we know from 369 runs so far:
+What we know from hundreds of runs so far:
 - Single-stage crashes ~25% of the time. Whether a seed crashes is not deterministic — the same seed can succeed or fail depending on other parameters.
 - Stage 2 field error does NOT predict single-stage success. Low-error seeds crash; high-error seeds sometimes converge.
 - Stage 2 is overwhelmingly order=4. Single-stage is overwhelmingly order=2. 72 high-scoring Stage 2 seeds at order=4 have never been tested in single-stage.

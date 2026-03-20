@@ -53,7 +53,7 @@ J = NonQSRatio
 
 ## Equilibria and Targets
 
-17 equilibrium files are available, covering iota 0.15–0.30 in steps of 0.01:
+19 equilibrium files are available (16 DESC + 2 VMEC originals + 001490):
 
 | Shorthand | Axis iota | Source |
 |-----------|-----------|--------|
@@ -131,7 +131,7 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 | Flag | Values | Default |
 |------|--------|---------|
 | `--solver` | `stage2`, `single-stage` | `stage2` |
-| `--equilibrium` | `iota15`, `iota20`, `001490`, or any .nc filename | `iota15` |
+| `--equilibrium` | `iota15`-`iota30`, `iota15p`, `iota20p`, `001490`, or any .nc filename | `iota15` |
 
 **Shared (both solvers):**
 | Flag | Default | Notes |
@@ -162,8 +162,9 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 | `--phi-width` | 0.03 | Coil toroidal width |
 | `--ftol` | 1e-15 | L-BFGS-B function tolerance |
 | `--gtol` | 1e-15 | L-BFGS-B gradient tolerance |
-| `--basin-hops` | 0 | Basin-hopping restarts (0 = single L-BFGS-B). Try 10-50 for deep exploration. Each hop perturbs coil DOFs and re-runs L-BFGS-B, keeping the best result. Runtime scales linearly: 20 hops ≈ 20× single run. |
+| `--basin-hops` | 0 | Basin-hopping restarts (0 = single L-BFGS-B). Works for both solvers. Each hop perturbs DOFs and re-runs L-BFGS-B, keeping the best result. Runtime scales linearly. |
 | `--basin-stepsize` | 0.01 | Perturbation scale for basin-hopping (fraction of DOF range) |
+| `--basin-seed` | -1 | RNG seed for basin-hopping (-1 = random). Set for reproducibility. |
 
 **Single-stage only:**
 | Flag | Default | Notes |
@@ -196,11 +197,36 @@ find stage2_seeds -name results.json | while read f; do python3 -c "import json;
 
 **Single-stage crash note**: If single-stage crashes with "surface goes back on itself", the Stage 2 seed coil produces an invalid Boozer surface. This is a geometry issue with the seed, not the single-stage weights. Try a different seed (different Stage 2 params or a different equilibrium).
 
+## Physics Goals
+
+The stellarator optimization targets:
+- **Low quasi-symmetry error** (`nonqs_ratio`) — determines long-term particle confinement
+- **Low Boozer residual** (`boozer_residual`) — accuracy of the magnetic coordinate representation
+- **Iota close to target** (`final_iota` vs `target_iota`) — rotational transform for confinement stability
+- **Volume close to target** (`final_volume` vs `target_volume`) — plasma capacity
+- **Low field error** (`field_error`) — how well coils reproduce the intended field
+- **Buildable coils** — curvature, spacing, and length within hardware limits
+
 ## Scoring
 
-**Stage 2**: `score = 1 / (1 + 25*FE + curvature_excess + 5*SI)`
+**`objective_J`** (lower = better) is the solver's own combined objective. **Use this for comparing runs within the same solver.**
 
-**Single-stage**: `score = 1 / (1 + 25*FE + 4*|iota_miss| + 8*|vol_miss| + curvature_excess + 5*SI)`
+- **Single-stage** `objective_J` balances: NonQS ratio + Boozer residual (×1000) + iota penalty (×100) + engineering constraints
+- **Stage 2** `objective_J` balances: SquaredFlux + length penalty + coil-coil distance + curvature penalty
+
+Do not compare Stage 2 and single-stage `objective_J` values directly — they optimize different things.
+
+Raw metrics for deeper analysis (all in JSON output):
+- `nonqs_ratio` — quasi-symmetry deviation (lower = better, single-stage only)
+- `boozer_residual` — Boozer coordinate accuracy (lower = better, single-stage only)
+- `field_error` — surface field leakage (lower = better)
+- `final_iota` vs `target_iota` — rotational transform accuracy
+- `final_volume` vs `target_volume` — plasma volume accuracy
+- `curve_curve_min_dist` — actual coil-coil spacing achieved
+- `max_curvature` — peak coil curvature
+- `self_intersecting` — hard reject if true
+
+The `score` field is a legacy proxy with arbitrary weights — use `objective_J` instead for new runs. Old runs without `objective_J` can still be compared by `score`.
 
 **SELF_INTERSECTING = True → always discard.**
 
@@ -235,7 +261,7 @@ Read these to understand the landscape, but all new runs go to `results.jsonl`.
 - Single-stage needs `nphi=127 ntheta=32` minimum (lower crashes Boozer init) and `--timeout 1200`+
 - Single-stage has a Boozer init pre-check that catches crashes in seconds. Many seeds crash — try different ones.
 - Basin non-determinism: at order=3, the same params can produce very different results. Don't assume one run is representative.
-- 001490 Boozer surface crashes in single-stage — geometry incompatible with current seeds.
+- 001490 has Stage 2 seeds but single-stage has not been successfully run — Boozer surface may crash.
 - Each equilibrium needs its own exploration — weight optima don't transfer directly.
 
 ## Logging Results
@@ -247,8 +273,8 @@ To review past experiments:
 # All results
 cat results.jsonl | python3 -c "import json,sys; [print(f'{json.loads(l)[\"solver\"]}/{json.loads(l)[\"equilibrium\"]} FE={json.loads(l)[\"field_error\"]} score={json.loads(l)[\"score\"]} SI={json.loads(l)[\"self_intersecting\"]}') for l in sys.stdin]"
 
-# Best non-SI results
-cat results.jsonl | python3 -c "import json,sys; runs=[json.loads(l) for l in sys.stdin]; good=[r for r in runs if r.get('status')=='pass']; good.sort(key=lambda r: r.get('field_error',999)); [print(f'FE={r[\"field_error\"]:.6f} score={r[\"score\"]} solver={r[\"solver\"]} eq={r[\"equilibrium\"]}') for r in good[:10]]"
+# Best non-SI results (by objective_J if available, else field_error)
+cat results.jsonl | python3 -c "import json,sys; runs=[json.loads(l) for l in sys.stdin]; good=[r for r in runs if r.get('status')=='pass']; good.sort(key=lambda r: r.get('objective_J') or r.get('field_error',999)); [print(f'J={r.get(\"objective_J\",\"?\"):.6g} FE={r[\"field_error\"]:.6f} solver={r[\"solver\"]} eq={r[\"equilibrium\"]}') for r in good[:10]]"
 
 # Count runs
 wc -l results.jsonl
@@ -258,11 +284,11 @@ Archived data (`results_pre_hardware_limits.*`) contains prior runs before hardw
 
 ## Research Landscape
 
-What we know from 369 runs so far:
+What we know from hundreds of runs so far:
 - Single-stage crashes ~25% of the time. Whether a seed crashes is not deterministic — the same seed can succeed or fail depending on other parameters.
 - Stage 2 field error does NOT predict single-stage success. Low-error seeds crash; high-error seeds sometimes converge.
 - Stage 2 is overwhelmingly order=4. Single-stage is overwhelmingly order=2. 72 high-scoring Stage 2 seeds at order=4 have never been tested in single-stage.
-- 19 equilibrium files exist (iota 15-30). Most exploration has concentrated on iota15 and iota20. Equilibrium 001490 has Stage 2 seeds but zero single-stage attempts.
+- 19 equilibrium files exist (iota15-iota30 + iota15p + iota20p + 001490). Most exploration has concentrated on iota15 and iota20.
 - Basin-hopping is implemented and available (`--basin-hops`, `--basin-stepsize`, `--basin-seed`) but has rarely been used.
 - Stage 2 field error is bimodal: ~40% of passing runs get trapped in a 0.04-0.05 local minimum.
 - When single-stage crashes, the crash reason and run directory are logged to results.jsonl. Use this feedback.
