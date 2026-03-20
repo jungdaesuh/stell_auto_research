@@ -930,15 +930,7 @@ def cmd_param_effect(args: argparse.Namespace) -> None:
     w, p = _where(solver=args.solver, eq=args.eq)
     param = args.param
 
-    # Map user-facing param names to denormalized columns
-    col_map = {
-        "order": "p_order", "curvature_weight": "p_curvature_weight",
-        "curvature_threshold": "p_curvature_threshold", "cc_weight": "p_cc_weight",
-        "banana_surf_radius": "p_banana_surf_radius", "major_radius": "p_major_radius",
-        "toroidal_flux": "p_toroidal_flux", "length_weight": "p_length_weight",
-        "res_weight": "p_res_weight", "iotas_weight": "p_iotas_weight",
-        "mpol": "p_mpol", "iota_target": "p_iota_target", "vol_target": "p_vol_target",
-    }
+    col_map = {f: f"p_{f}" for f in _PARAM_FIELDS}
 
     rows = db.execute(f"SELECT * FROM runs WHERE {w}", p).fetchall()
 
