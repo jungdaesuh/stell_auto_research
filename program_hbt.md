@@ -111,6 +111,29 @@ Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`.
 
 On crash: the run directory is preserved for debugging. The JSON includes `run_dir` path and last 30 lines of the solver log.
 
+### Poincaré Plots (Visual Field Validation)
+
+When you find a strong single-stage result, generate a Poincaré plot to visually verify the magnetic field topology. This shows whether the coils produce clean nested flux surfaces or chaotic edge regions.
+
+```bash
+POINCARE_OUT_DIR="/path/to/single_stage_results/outputs-.../mpol=8-ntor=6-HASH-TIMESTAMP" \
+/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python \
+/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed/examples/single_stage_optimization/POINCARE_PLOTTING/poincare_surfaces.py
+```
+
+Takes 2-5 minutes. Saves `PoincarePlot_opt.png` (optimized field) in the same directory. Use the Read tool to view it. Don't run this for every experiment — only for frontier results worth validating visually.
+
+**How to read a Poincaré plot:**
+The plot shows 4 toroidal cross-sections (phi = 0, 0.1π, 0.2π, 0.3π). Each colored trace is one field line intersecting that plane over thousands of toroidal transits. The black curve is the target plasma boundary.
+- **Nested closed curves** filling the cross-section = good confinement. Particles stay trapped.
+- **Curves filling most of the black boundary** = the optimized surface is close to the target.
+- **Scattered dots outside the outermost closed curve** = edge stochasticity. Field lines escape. Some is inevitable; less is better.
+- **Large gaps or islands between closed curves** = magnetic islands. Bad for confinement.
+- **Detached cluster of dots far from the main surfaces** = field lines that escaped entirely. The coil field doesn't confine there.
+- **Tight, many nested surfaces with clean edges** = the best outcome. This is what mpol=18 aims to achieve.
+
+If you need deeper interpretation (magnetic islands, resonances, KAM surfaces), search the web for stellarator Poincaré plot analysis or consult the research papers in `/Users/suhjungdae/code/columbia/` (e.g., `Baillod_2025_Nucl._Fusion_65_026046.pdf`, `Banana-Poster.pdf`).
+
 ### Stage 2 Seeds for Single-Stage
 
 Single-stage requires a `biot_savart_opt.json` from a completed Stage 2 run as its starting coil. `run_one.py` handles this automatically:

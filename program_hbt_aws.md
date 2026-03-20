@@ -93,7 +93,7 @@ What we know from hundreds of runs so far:
 - Single-stage crashes ~25% of the time. Whether a seed crashes is not deterministic — the same seed can succeed or fail depending on other parameters.
 - Stage 2 field error does NOT predict single-stage success. Low-error seeds crash; high-error seeds sometimes converge.
 - Stage 2 is overwhelmingly order=4. Single-stage is overwhelmingly order=2. 72 high-scoring Stage 2 seeds at order=4 have never been tested in single-stage.
-- 19 equilibrium files exist (iota 15-30). Most exploration has concentrated on iota15 and iota20. Equilibrium 001490 has Stage 2 seeds but zero single-stage attempts.
+- 19 equilibrium files exist (iota15-iota30 + iota15p + iota20p + 001490). Most exploration has concentrated on iota15 and iota20.
 - Basin-hopping is implemented and available (`--basin-hops`, `--basin-stepsize`, `--basin-seed`) but has rarely been used.
 - Stage 2 field error is bimodal: ~40% of passing runs get trapped in a 0.04-0.05 local minimum.
 - When single-stage crashes, the crash reason and run directory are logged to results.jsonl. Use this feedback.
@@ -120,6 +120,6 @@ LOOP FOREVER:
 5. **Read results.** Compare with local agent's findings.
 6. **Repeat.** Never stop. Never ask.
 
-**NEVER STOP.** Each batch takes 10-30 minutes (2 runs in parallel). You can do ~4-6 batches per hour. Keep validating, keep exploring the single-stage weight space. If all seeds crash, run Stage 2 on AWS to generate fresh seeds.
+**NEVER STOP.** Each run takes 10-30 minutes. You can do ~2-4 runs per hour. Keep validating, keep exploring the single-stage weight space. If all seeds crash, run Stage 2 on AWS to generate fresh seeds.
 
 **STOP THE INSTANCE WHEN THE HUMAN TELLS YOU TO STOP.** Run `python scripts/aws_run.py stop` before ending the session. Do NOT leave the instance running unattended.
