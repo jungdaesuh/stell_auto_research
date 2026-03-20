@@ -455,8 +455,41 @@ _META_ARGS = {"--solver", "--equilibrium", "--timeout"}
 _SAFE_ARG_PATTERN = re.compile(r"^[a-zA-Z0-9._/=\-]+$")
 
 
+def _coerce_value(s: str) -> object:
+    """Try int, then float, then return as string."""
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            return float(s)
+        except ValueError:
+            return s
+
+
+def _parse_params_from_args(clean_args: str) -> dict:
+    """Parse --flag value and --flag=value pairs into a params dict for crash records."""
+    parts = clean_args.split()
+    params: dict = {}
+    i = 0
+    while i < len(parts):
+        token = parts[i]
+        if token.startswith("--") and "=" in token:
+            key, val_str = token[2:].split("=", 1)
+            key = key.replace("-", "_")
+            params[key] = _coerce_value(val_str)
+            i += 1
+        elif token.startswith("--") and i + 1 < len(parts):
+            key = token[2:].replace("-", "_")
+            params[key] = _coerce_value(parts[i + 1])
+            i += 2
+        else:
+            i += 1
+    return params
+
+
 def _aws_error(
-    solver: str, equilibrium: str, feedback: str, elapsed: float = 0.0,
+    solver: str, equilibrium: str, feedback: str,
+    elapsed: float = 0.0, clean_args: str = "",
 ) -> dict:
     """Build a structured crash record matching run_one.py's _emit_error format."""
     return {
@@ -472,7 +505,7 @@ def _aws_error(
         "elapsed": round(elapsed, 1),
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "feedback": feedback,
-        "params": {},
+        "params": _parse_params_from_args(clean_args),
     }
 
 
@@ -552,8 +585,10 @@ def _run_remote(ip: str, extra_args: str) -> str:
     )
     remote_solver = REMOTE_SOLVER_STAGE2 if solver == "stage2" else REMOTE_SOLVER_SS
 
-    # Pre-check: for single-stage, run --init-only first to catch Boozer init failures (seconds vs 10-30 min)
-    if solver == "single-stage":
+    # Pre-check: for single-stage, run --init-only first to catch Boozer init failures.
+    # Skip when explicit seed is provided (user knows what they're doing).
+    has_explicit_seed = "--stage2-bs-path" in clean_args
+    if solver == "single-stage" and not has_explicit_seed:
         precheck_id = (
             f"precheck_{int(time.time() * 1000)}_{random.randint(10000, 99999)}"
         )
@@ -570,14 +605,14 @@ def _run_remote(ip: str, extra_args: str) -> str:
             f"tail -5 /tmp/{precheck_id}/precheck.log 2>/dev/null; "
             f"rm -rf /tmp/{precheck_id}"
         )
-        pre_out, pre_err, pre_rc = ssh(ip, precheck_cmd, timeout=120)
+        pre_out, pre_err, pre_rc = ssh(ip, precheck_cmd, timeout=180)
         if "EXIT:0" not in pre_out:
             feedback = "REMOTE BOOZER PRE-CHECK FAILED (saved ~10-30 min). "
             if "goes back" in pre_out or "self_intersecting" in pre_out.lower():
                 feedback += "Surface folds — seed incompatible. Try a different seed."
             else:
                 feedback += pre_out[-300:]
-            error_output = _aws_error(solver, equilibrium, feedback)
+            error_output = _aws_error(solver, equilibrium, feedback, clean_args=clean_args)
             with _JSONL_THREAD_LOCK:
                 _append_jsonl(error_output)
             return json.dumps(error_output)
@@ -687,21 +722,21 @@ def _run_remote(ip: str, extra_args: str) -> str:
                 return json.dumps(output)
 
         error_output = _aws_error(
-            solver, equilibrium, f"no JSON in output: {raw[-200:]}", elapsed,
+            solver, equilibrium, f"no JSON in output: {raw[-200:]}", elapsed, clean_args,
         )
         with _JSONL_THREAD_LOCK:
             _append_jsonl(error_output)
         return json.dumps(error_output)
     except subprocess.TimeoutExpired:
         error_output = _aws_error(
-            solver, equilibrium, "timeout", time.monotonic() - t0,
+            solver, equilibrium, "timeout", time.monotonic() - t0, clean_args,
         )
         with _JSONL_THREAD_LOCK:
             _append_jsonl(error_output)
         return json.dumps(error_output)
     except Exception as exc:
         error_output = _aws_error(
-            solver, equilibrium, str(exc), time.monotonic() - t0,
+            solver, equilibrium, str(exc), time.monotonic() - t0, clean_args,
         )
         with _JSONL_THREAD_LOCK:
             _append_jsonl(error_output)

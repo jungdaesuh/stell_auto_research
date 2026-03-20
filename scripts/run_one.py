@@ -575,6 +575,7 @@ def _resolve_stage2_seed(args: argparse.Namespace, plasma_surf: str) -> str | No
                 if (
                     abs(seed_meta.get("MAJOR_RADIUS", 0) - args.major_radius) < 0.001
                     and seed_meta.get("order", 0) == args.order
+                    and not seed_meta.get("SELF_INTERSECTING", False)
                 ):
                     fe = seed_meta.get("FIELD_ERROR", 999.0)
                     if isinstance(fe, float) and math.isnan(fe):

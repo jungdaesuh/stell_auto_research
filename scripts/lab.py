@@ -962,13 +962,16 @@ def cmd_param_effect(args: argparse.Namespace) -> None:
         fes = [r["field_error"] for r in passes if r["field_error"] is not None]
         return len(bucket), pass_rate, avg_score, _fmt_fe(min(fes) if fes else None)
 
-    if len(values) <= 15:
+    is_numeric = isinstance(values[0], (int, float))
+
+    if not is_numeric or len(values) <= 15:
         print(f"{'value':>12s}  {'runs':>5s}  {'pass%':>6s}  {'avg_score':>10s}  {'best_FE':>10s}")
         print("-" * 55)
         for v in values:
             bucket = [r for val, r in pairs if val == v]
             n, pr, avg, fe = _bucket_stats(bucket)
-            print(f"{v:>12g}  {n:>5d}  {pr:>5.0f}%  {avg:>10.4f}  {fe:>10s}")
+            v_str = f"{v:>12g}" if is_numeric else f"{v!s:>12s}"
+            print(f"{v_str}  {n:>5d}  {pr:>5.0f}%  {avg:>10.4f}  {fe:>10s}")
     else:
         bucket_size = max(1, len(pairs) // 8)
         print(
