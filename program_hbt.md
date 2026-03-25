@@ -107,7 +107,7 @@ Output is one line of JSON to stdout (also auto-appended to `results.jsonl`):
 {"source": "local", "solver": "stage2", "equilibrium": "iota15", "status": "pass", "score": 0.7596, "field_error": 0.01194, "self_intersecting": false, "max_curvature": 30.54, "iterations": 320, "elapsed": 42.3, "params": {"cc_weight": 44.0, "curvature_threshold": 30.0, ...}}
 ```
 
-Every record includes a UTC `timestamp`. Single-stage adds: `final_iota`, `final_volume`, `target_iota`, `target_volume`, and `stage2_seed_path` (the Stage 2 seed that was used).
+Every record includes a UTC `timestamp`. Single-stage adds: `final_iota`, `final_volume`, and `stage2_seed_path` (the Stage 2 seed that was used). Target iota and volume are in the `params` dict (`iota_target`, `vol_target`).
 
 On crash: the run directory is preserved for debugging. The JSON includes `run_dir` path and last 30 lines of the solver log.
 
@@ -227,8 +227,8 @@ lab.py seeds --eq <eq> --best             # single lowest-FE seed
 The stellarator optimization targets:
 - **Low quasi-symmetry error** (`nonqs_ratio`) — determines long-term particle confinement
 - **Low Boozer residual** (`boozer_residual`) — accuracy of the magnetic coordinate representation
-- **Iota close to target** (`final_iota` vs `target_iota`) — rotational transform for confinement stability
-- **Volume close to target** (`final_volume` vs `target_volume`) — plasma capacity
+- **Iota close to target** (`final_iota` vs `params.iota_target`) — rotational transform for confinement stability
+- **Volume close to target** (`final_volume` vs `params.vol_target`) — plasma capacity
 - **Low field error** (`field_error`) — how well coils reproduce the intended field
 - **Buildable coils** — curvature, spacing, and length within hardware limits
 
@@ -245,8 +245,8 @@ Raw metrics for deeper analysis (all in JSON output):
 - `nonqs_ratio` — quasi-symmetry deviation (lower = better, single-stage only)
 - `boozer_residual` — Boozer coordinate accuracy (lower = better, single-stage only)
 - `field_error` — surface field leakage (lower = better)
-- `final_iota` vs `target_iota` — rotational transform accuracy
-- `final_volume` vs `target_volume` — plasma volume accuracy. NOTE: `final_volume` is Boozer surface volume, not plasma boundary volume — they can differ under soft penalty
+- `final_iota` vs `params.iota_target` — rotational transform accuracy
+- `final_volume` vs `params.vol_target` — plasma volume accuracy. NOTE: `final_volume` is Boozer surface volume, not plasma boundary volume — they can differ under soft penalty
 - `curve_curve_min_dist` — actual coil-coil spacing achieved
 - `max_curvature` — peak coil curvature
 - `self_intersecting` — hard reject if true

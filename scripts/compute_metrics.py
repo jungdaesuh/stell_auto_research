@@ -25,8 +25,6 @@ from pathlib import Path
 
 import numpy as np
 
-PYTHON_ENV = Path("/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python")
-
 # HBT vacuum vessel — physical constant, not an optimization parameter.
 # Source: single_stage_banana_example.py lines 768-773
 VV_NFP = 5
@@ -130,7 +128,7 @@ def process_dir(artifact_dir: Path, num_tf_coils: int = DEFAULT_NUM_TF_COILS) ->
             existing = json.load(f)
     else:
         existing = {}
-    existing.update(new_metrics)
+    existing.update({k: v for k, v in new_metrics.items() if v is not None})
     with open(results_path, "w") as f:
         json.dump(existing, f, indent=2)
 

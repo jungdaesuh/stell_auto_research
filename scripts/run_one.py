@@ -514,8 +514,6 @@ def _run_experiment(args: argparse.Namespace) -> None:
     if args.solver == "single-stage":
         output["final_iota"] = metrics.get("FINAL_IOTA")
         output["final_volume"] = metrics.get("FINAL_VOLUME")
-        output["target_iota"] = metrics.get("TARGET_IOTA")
-        output["target_volume"] = metrics.get("TARGET_VOLUME")
         output["nonqs_ratio"] = metrics.get("NONQS_RATIO")
         output["boozer_residual"] = metrics.get("BOOZER_RESIDUAL")
         # Log which Stage 2 seed was used (resolved or explicit)

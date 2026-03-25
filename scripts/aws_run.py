@@ -711,8 +711,6 @@ def _run_remote(ip: str, extra_args: str) -> str:
                 if solver == "single-stage":
                     output["final_iota"] = metrics.get("FINAL_IOTA")
                     output["final_volume"] = metrics.get("FINAL_VOLUME")
-                    output["target_iota"] = metrics.get("TARGET_IOTA")
-                    output["target_volume"] = metrics.get("TARGET_VOLUME")
                     output["nonqs_ratio"] = metrics.get("NONQS_RATIO")
                     output["boozer_residual"] = metrics.get("BOOZER_RESIDUAL")
                     output["stage2_seed_path"] = metrics.get("STAGE2_BS_PATH")

@@ -178,8 +178,8 @@ Since ALM eliminates weight tuning, your exploration focuses on:
 - `nonqs_ratio` — quasi-symmetry deviation (lower = better)
 - `boozer_residual` — Boozer coordinate accuracy (lower = better)
 - `field_error` — surface field leakage (lower = better)
-- `final_iota` vs `target_iota` — rotational transform accuracy
-- `final_volume` vs `target_volume` — plasma volume accuracy
+- `final_iota` vs `params.iota_target` — rotational transform accuracy
+- `final_volume` vs `params.vol_target` — plasma volume accuracy
 - `curve_curve_min_dist` — should be ≥ 0.05m (ALM enforces this)
 - `max_curvature` — should be ≤ 40 (ALM enforces this)
 - `self_intersecting` — hard reject if true
@@ -219,8 +219,8 @@ python scripts/lab.py sql "SELECT * FROM runs WHERE json_extract(params, '$.alm'
 The stellarator optimization targets:
 - **Low quasi-symmetry error** (`nonqs_ratio`) — determines long-term particle confinement
 - **Low Boozer residual** (`boozer_residual`) — accuracy of the magnetic coordinate representation
-- **Iota close to target** (`final_iota` vs `target_iota`) — rotational transform for confinement stability
-- **Volume close to target** (`final_volume` vs `target_volume`) — plasma capacity
+- **Iota close to target** (`final_iota` vs `params.iota_target`) — rotational transform for confinement stability
+- **Volume close to target** (`final_volume` vs `params.vol_target`) — plasma capacity
 - **Low field error** (`field_error`) — how well coils reproduce the intended field
 - **Buildable coils** — curvature ≤ 40, spacing ≥ 0.05m, clearances met (ALM enforces these)
 
