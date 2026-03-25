@@ -35,6 +35,7 @@ sys.path.insert(0, str(REPO_ROOT))
 # Paths
 PYTHON = "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python"
 SIMSOPT_ROOT = Path("/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed")
+SIMSOPT_ROOT_ALM = Path("/Users/suhjungdae/code/hbt-compare/wt/alm")
 EQUILIBRIA = Path("/Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA")
 OUTPUT_BASE = Path("/tmp/hbt_autoresearch")
 STAGE2_SEED_STORE = REPO_ROOT / "stage2_seeds"
@@ -302,11 +303,32 @@ def main() -> None:
         help="Explicit path to biot_savart_opt.json. Recommended: use stage2_seed_path from a Stage 2 run's JSON output.",
     )
 
+    # --- ALM (single-stage only) ---
+    parser.add_argument(
+        "--alm", action="store_true",
+        help="Single-stage: use Augmented Lagrangian Method for constraint handling.",
+    )
+    parser.add_argument("--alm-outer-iters", type=int, default=20)
+    parser.add_argument("--alm-mu-init", type=float, default=1.0)
+    parser.add_argument("--alm-mu-max", type=float, default=1e6)
+    parser.add_argument("--alm-mu-increase", type=float, default=5.0)
+    parser.add_argument("--alm-tol", type=float, default=1e-6)
+
     # --- Execution ---
     parser.add_argument("--omp-threads", type=int, default=10)
     parser.add_argument("--timeout", type=int, default=600)
 
     args = parser.parse_args()
+
+    # Validate ALM constraints
+    if args.alm and args.solver == "stage2":
+        parser.error("--alm is only supported with --solver single-stage")
+    if args.alm and args.basin_hops > 0:
+        parser.error("--alm and --basin-hops are mutually exclusive")
+    # Auto-bump timeout for ALM (multiple outer iterations need more time)
+    if args.alm and args.timeout <= 600:
+        args.timeout = 3600
+        print("Auto-set --timeout 3600 for ALM mode.", file=sys.stderr)
 
     # Auto-manage threads: count concurrent run_one.py processes, divide cores fairly.
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
@@ -336,7 +358,14 @@ def _run_experiment(args: argparse.Namespace) -> None:
     """
 
     # Resolve solver and equilibrium
-    solver_script = SOLVERS[args.solver]
+    # ALM mode uses the alm worktree's single-stage solver
+    if args.alm and args.solver == "single-stage":
+        solver_script = (
+            SIMSOPT_ROOT_ALM / "examples" / "single_stage_optimization"
+            / "SINGLE_STAGE" / "single_stage_banana_example.py"
+        )
+    else:
+        solver_script = SOLVERS[args.solver]
     plasma_surf = EQUILIBRIUM_FILES.get(args.equilibrium, args.equilibrium)
 
     # Build CLI args for the solver
@@ -467,7 +496,19 @@ def _run_experiment(args: argparse.Namespace) -> None:
 
     # Solver objective and physics metrics (new — available when solver writes them)
     output["objective_J"] = metrics.get("OBJECTIVE_J")
+    output["termination_message"] = metrics.get("TERMINATION_MESSAGE")
+    output["optimizer_success"] = metrics.get("OPTIMIZER_SUCCESS")
+    output["ftol"] = metrics.get("FTOL")
+    output["gtol"] = metrics.get("GTOL")
     output["curve_curve_min_dist"] = metrics.get("CURVE_CURVE_MIN_DIST")
+
+    # Additional comparison metrics (written by solver to results.json)
+    output["coil_length"] = metrics.get("COIL_LENGTH")
+    output["curve_surface_min_dist"] = metrics.get("CURVE_SURFACE_MIN_DIST")
+    output["surface_vessel_min_dist"] = metrics.get("SURFACE_VESSEL_MIN_DIST")
+    output["max_force"] = metrics.get("MAX_FORCE")
+    output["lead_end_curvature"] = metrics.get("LEAD_END_CURVATURE")
+    output["non_lead_end_curvature"] = metrics.get("NON_LEAD_END_CURVATURE")
 
     # Single-stage extra fields
     if args.solver == "single-stage":
@@ -705,6 +746,10 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.ss_dist),
             "--maxcor",
             str(args.maxcor),
+            "--ftol",
+            str(args.ftol),
+            "--gtol",
+            str(args.gtol),
             "--basin-hops",
             str(args.basin_hops),
             "--basin-stepsize",
@@ -712,6 +757,15 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             "--basin-seed",
             str(args.basin_seed),
         ]
+        if args.alm:
+            cli += [
+                "--alm",
+                "--alm-outer-iters", str(args.alm_outer_iters),
+                "--alm-mu-init", str(args.alm_mu_init),
+                "--alm-mu-max", str(args.alm_mu_max),
+                "--alm-mu-increase", str(args.alm_mu_increase),
+                "--alm-tol", str(args.alm_tol),
+            ]
         return cli
 
 
@@ -764,8 +818,17 @@ def _extract_params(args: argparse.Namespace) -> dict:
                 "ss_length_weight": args.ss_length_weight,
                 "maxcor": args.maxcor,
                 "boozer_stage": args.boozer_stage,
+                "alm": args.alm,
             }
         )
+        if args.alm:
+            shared.update({
+                "alm_outer_iters": args.alm_outer_iters,
+                "alm_mu_init": args.alm_mu_init,
+                "alm_mu_max": args.alm_mu_max,
+                "alm_mu_increase": args.alm_mu_increase,
+                "alm_tol": args.alm_tol,
+            })
     return shared
 
 

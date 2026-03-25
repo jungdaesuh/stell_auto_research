@@ -130,7 +130,7 @@ The plot shows 4 toroidal cross-sections (phi = 0, 0.1π, 0.2π, 0.3π). Each co
 - **Scattered dots outside the outermost closed curve** = edge stochasticity. Field lines escape. Some is inevitable; less is better.
 - **Large gaps or islands between closed curves** = magnetic islands. Bad for confinement.
 - **Detached cluster of dots far from the main surfaces** = field lines that escaped entirely. The coil field doesn't confine there.
-- **Tight, many nested surfaces with clean edges** = the best outcome. This is what mpol=18 aims to achieve.
+- **Tight, many nested surfaces with clean edges** = the best outcome. Target mpol=12 ntor=12 for good resolution (professor-confirmed); mpol=18 is frontier but not required.
 
 If you need deeper interpretation (magnetic islands, resonances, KAM surfaces), search the web for stellarator Poincaré plot analysis or consult the research papers in `/Users/suhjungdae/code/columbia/` (e.g., `Baillod_2025_Nucl._Fusion_65_026046.pdf`, `Banana-Poster.pdf`).
 
@@ -246,7 +246,7 @@ Raw metrics for deeper analysis (all in JSON output):
 - `boozer_residual` — Boozer coordinate accuracy (lower = better, single-stage only)
 - `field_error` — surface field leakage (lower = better)
 - `final_iota` vs `target_iota` — rotational transform accuracy
-- `final_volume` vs `target_volume` — plasma volume accuracy
+- `final_volume` vs `target_volume` — plasma volume accuracy. NOTE: `final_volume` is Boozer surface volume, not plasma boundary volume — they can differ under soft penalty
 - `curve_curve_min_dist` — actual coil-coil spacing achieved
 - `max_curvature` — peak coil curvature
 - `self_intersecting` — hard reject if true
@@ -257,18 +257,12 @@ The `score` field is a legacy proxy with arbitrary weights — use `objective_J`
 
 **Constraint floors (enforced in the solver code via `max()`, cannot go below):**
 - `cc_threshold` / `cc_dist` >= 0.05m (5cm minimum coil-coil spacing)
-- `curvature_threshold` >= 20 (minimum curvature limit)
+- `curvature_threshold` >= 40 (confirmed by Columbia physics team 2026-03-24)
 - `length_target` >= 1.75m (maximum coil length)
 - `cs_dist` >= 0.02m (2cm minimum coil-to-surface clearance, single-stage only)
 - `ss_dist` >= 0.04m (4cm minimum surface-to-vessel clearance, single-stage only)
 
-These are working defaults from the baseline code, not confirmed hardware limits. The hardware team is reviewing final values. You can freely adjust weights (cc_weight, curvature_weight, length_weight, cs_weight, surf_dist_weight) to change how hard the optimizer pushes against these limits.
-
-**IMPORTANT — Curvature threshold: explore both CT=20 and CT=40.** The baseline Stage 2 used CT=40, the baseline single-stage used CT=20. The hardware team has not confirmed which is the true limit. You MUST explore both paths:
-- **CT=20 path**: tighter curvature, forces smoother coils, current best FE~0.0033 with order=4
-- **CT=40 path**: looser curvature (Stage 2 baseline default), allows sharper bends, needs its own weight tuning
-
-Track two separate frontiers. Do not neglect CT=40 just because CT=20 has better results so far — CT=40 has not been properly explored with order=4 and optimized weights.
+You can freely adjust weights (cc_weight, curvature_weight, length_weight, cs_weight, surf_dist_weight) to change how hard the optimizer pushes against these limits. Prior runs with CT=20 used a more conservative floor and remain valid — those coils are buildable.
 
 ## Prior Results
 
@@ -328,6 +322,8 @@ What we know from hundreds of runs so far:
 - 19 equilibrium files exist (iota15-iota30 + iota15p + iota20p + 001490). Most exploration has concentrated on iota15 and iota20.
 - Basin-hopping is implemented and available (`--basin-hops`, `--basin-stepsize`, `--basin-seed`) but has rarely been used.
 - Stage 2 field error is bimodal: ~40% of passing runs get trapped in a 0.04-0.05 local minimum.
+- **Columbia baseline best** (with usable artifacts): CC7-iota15 at mpol=15, Obj_J=7.44e-04. Our mpol=12 iota15 result (FE=0.000252) is competitive at lower resolution.
+- **mpol=12 ntor=12 is sufficient resolution** (confirmed by professor). Do not run mpol=14+ ramps. ntor=12 runs have NOT been done yet (only ntor=6 exists).
 - When single-stage crashes, the crash reason and run directory are logged to results.jsonl. Use this feedback.
 
 ## Principles

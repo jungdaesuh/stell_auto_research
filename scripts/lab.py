@@ -56,11 +56,14 @@ CREATE TABLE runs (
     objective_J REAL, curve_curve_min_dist REAL,
     final_iota REAL, final_volume REAL, target_iota REAL, target_volume REAL,
     nonqs_ratio REAL, boozer_residual REAL, note TEXT,
+    termination_message TEXT, optimizer_success INTEGER, ftol REAL, gtol REAL,
+    coil_length REAL, curve_surface_min_dist REAL, surface_vessel_min_dist REAL,
+    max_force REAL, lead_end_curvature REAL, non_lead_end_curvature REAL,
     p_order INTEGER, p_curvature_weight REAL, p_curvature_threshold REAL,
     p_cc_weight REAL, p_banana_surf_radius REAL, p_major_radius REAL,
     p_toroidal_flux REAL, p_length_weight REAL, p_cc_threshold REAL,
     p_maxiter INTEGER, p_res_weight REAL, p_iotas_weight REAL,
-    p_mpol INTEGER, p_iota_target REAL, p_vol_target REAL,
+    p_mpol INTEGER, p_iota_target REAL, p_vol_target REAL, p_alm INTEGER,
     params_json TEXT
 )"""
 
@@ -72,6 +75,9 @@ _TOP_FIELDS = [
     "run_dir", "objective_J", "curve_curve_min_dist", "final_iota",
     "final_volume", "target_iota", "target_volume", "nonqs_ratio",
     "boozer_residual", "note",
+    "termination_message", "optimizer_success", "ftol", "gtol",
+    "coil_length", "curve_surface_min_dist", "surface_vessel_min_dist",
+    "max_force", "lead_end_curvature", "non_lead_end_curvature",
 ]
 
 # Maps params dict keys → DB column names (p_ prefix)
@@ -79,7 +85,7 @@ _PARAM_FIELDS = [
     "order", "curvature_weight", "curvature_threshold", "cc_weight",
     "banana_surf_radius", "major_radius", "toroidal_flux", "length_weight",
     "cc_threshold", "maxiter", "res_weight", "iotas_weight", "mpol",
-    "iota_target", "vol_target",
+    "iota_target", "vol_target", "alm",
 ]
 
 _SI_MAP = {True: 1, False: 0}

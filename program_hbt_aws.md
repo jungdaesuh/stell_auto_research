@@ -39,7 +39,7 @@ python scripts/aws_run.py batch \
 # Stage 2 batch (faster, for generating seeds)
 python scripts/aws_run.py batch \
   "--cc-weight 44 --curvature-threshold 30 --order 3 --maxiter 800" \
-  "--cc-weight 50 --curvature-threshold 20 --order 3 --maxiter 800"
+  "--cc-weight 50 --curvature-threshold 40 --order 3 --maxiter 800"
 
 # Single run
 python scripts/aws_run.py run --solver single-stage --stage2-bs-path /home/ubuntu/stage2_seeds/...
@@ -82,6 +82,8 @@ Same as local agent:
 - **Boozer init crashes**: Some seeds produce surfaces that fold. If a seed crashes, try a different one. The crash is instant (pre-checked locally, but no pre-check on remote yet).
 - **Parallel limit**: 1 run at a time on c5ad.8xlarge (30 threads on 32 cores). For high-mpol runs, dedicate all cores to one run.
 - **Results are shared**: Both agents write to the same `results.jsonl`. Check `"source"` field to see who did what.
+- **Download results before stopping**: `python scripts/aws_run.py download` pulls all mpol ramp results, logs, and Poincaré plots into `ec2_backups/<datetime>/`. Always run this before `aws_run.py stop`.
+- **Cost limit**: $50 in aws_run.py. Only fires on `get_ip()` calls, not automatically during long runs.
 
 ## Research Landscape
 
