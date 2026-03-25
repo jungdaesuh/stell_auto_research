@@ -1,0 +1,16 @@
+{
+  "/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed": {
+    "python": "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python3.11",
+    "solver_commit": "9caa7ce471b8",
+    "solver_branch": "hho-runner-parameterization",
+    "solver_dirty": false,
+    "solver_root": "/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed"
+  },
+  "/Users/suhjungdae/code/columbia/simsopt": {
+    "python": "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python3.11",
+    "solver_commit": "31e343f35c52",
+    "solver_branch": "hho-runner-parameterization",
+    "solver_dirty": true,
+    "solver_root": "/Users/suhjungdae/code/columbia/simsopt"
+  }
+}

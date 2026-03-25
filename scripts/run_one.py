@@ -32,27 +32,106 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-# Paths
-PYTHON = "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python"
-SIMSOPT_ROOT = Path("/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed")
-SIMSOPT_ROOT_ALM = Path("/Users/suhjungdae/code/hbt-compare/wt/alm")
+# Paths — defaults (used when --solver-root is not specified)
+_DEFAULT_PYTHON = "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python"
+_DEFAULT_SIMSOPT_ROOT = Path("/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed")
 EQUILIBRIA = Path("/Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA")
 OUTPUT_BASE = Path("/tmp/hbt_autoresearch")
 STAGE2_SEED_STORE = REPO_ROOT / "stage2_seeds"
 SINGLE_STAGE_STORE = REPO_ROOT / "single_stage_results"
+SOLVER_CONFIG_PATH = REPO_ROOT / ".solver_config.json"
 
-SOLVERS = {
-    "stage2": SIMSOPT_ROOT
-    / "examples"
-    / "single_stage_optimization"
-    / "STAGE_2"
-    / "banana_coil_solver.py",
-    "single-stage": SIMSOPT_ROOT
-    / "examples"
-    / "single_stage_optimization"
-    / "SINGLE_STAGE"
-    / "single_stage_banana_example.py",
+# Relative paths from any SIMSOPT root to solver scripts
+_SOLVER_REL_PATHS = {
+    "stage2": Path("examples/single_stage_optimization/STAGE_2/banana_coil_solver.py"),
+    "single-stage": Path("examples/single_stage_optimization/SINGLE_STAGE/single_stage_banana_example.py"),
 }
+
+
+def _load_solver_config() -> dict:
+    """Load saved solver configurations from .solver_config.json."""
+    if SOLVER_CONFIG_PATH.exists():
+        try:
+            with open(SOLVER_CONFIG_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"WARNING: corrupt .solver_config.json: {e}", file=sys.stderr)
+    return {}
+
+
+def _save_solver_config(config: dict) -> None:
+    with open(SOLVER_CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def _get_git_metadata(solver_root: Path) -> dict:
+    """Extract git commit, branch, and dirty status from a solver root."""
+    meta = {}
+    try:
+        meta["solver_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=solver_root,
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()[:12]
+        meta["solver_branch"] = subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=solver_root,
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        dirty = subprocess.check_output(
+            ["git", "diff", "--stat", "HEAD"], cwd=solver_root,
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        meta["solver_dirty"] = bool(dirty)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    meta["solver_root"] = str(solver_root)
+    return meta
+
+
+def _resolve_solver(args) -> tuple[list[str], Path, dict]:
+    """Resolve the Python command, solver script path, and git metadata.
+
+    Returns (cmd_prefix, solver_script, git_meta).
+    cmd_prefix is the command prefix for subprocess (e.g., [python] or [python, -S, launcher, ...]).
+    """
+    solver_root = getattr(args, "solver_root", None)
+
+    if solver_root is None:
+        # Default: use hardcoded candidate-fixed paths (today's behavior)
+        solver_script = _DEFAULT_SIMSOPT_ROOT / _SOLVER_REL_PATHS[args.solver]
+        return [_DEFAULT_PYTHON], solver_script, _get_git_metadata(_DEFAULT_SIMSOPT_ROOT)
+
+    solver_root = Path(solver_root).resolve()
+
+    # Look up python from config or CLI
+    solver_python = getattr(args, "solver_python", None)
+    if solver_python is None:
+        config = _load_solver_config()
+        solver_python = config.get(str(solver_root), {}).get("python")
+    if solver_python is None:
+        print(f"ERROR: No --solver-python specified and no saved config for {solver_root}.", file=sys.stderr)
+        print(f"Run: python scripts/run_one.py --register --solver-root {solver_root} --solver-python /path/to/python", file=sys.stderr)
+        sys.exit(1)
+
+    solver_script = solver_root / _SOLVER_REL_PATHS[args.solver]
+    if not solver_script.exists():
+        print(f"ERROR: Solver script not found: {solver_script}", file=sys.stderr)
+        sys.exit(1)
+
+    # Detect site-packages from the python interpreter
+    site_packages = subprocess.check_output(
+        [solver_python, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        text=True, stderr=subprocess.DEVNULL,
+    ).strip()
+
+    # Use the -S launcher pattern: bypass editable installs, prepend solver_root/src
+    cmd_prefix = [
+        solver_python, "-S",
+        str(REPO_ROOT / "scripts" / "_solver_launcher.py"),
+        "--live-repo", str(solver_root),
+        "--site-packages", site_packages,
+    ]
+
+    return cmd_prefix, solver_script, _get_git_metadata(solver_root)
 
 EQUILIBRIUM_FILES = {
     "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
@@ -314,11 +393,76 @@ def main() -> None:
     parser.add_argument("--alm-mu-increase", type=float, default=5.0)
     parser.add_argument("--alm-tol", type=float, default=1e-6)
 
+    # --- Solver variant ---
+    parser.add_argument(
+        "--solver-root", type=str, default=None,
+        help="Path to a SIMSOPT repo root. Auto-detects solver scripts and git metadata. "
+             "When omitted, uses the default candidate-fixed worktree.",
+    )
+    parser.add_argument(
+        "--solver-python", type=str, default=None,
+        help="Path to the Python interpreter for this solver root. "
+             "Saved by --register so you only need to specify it once.",
+    )
+    parser.add_argument(
+        "--register", action="store_true",
+        help="Register a solver root: validate paths, save python interpreter, exit.",
+    )
+
     # --- Execution ---
     parser.add_argument("--omp-threads", type=int, default=10)
     parser.add_argument("--timeout", type=int, default=600)
 
-    args = parser.parse_args()
+    # Use parse_known_args only when --solver-root is specified (to forward extra solver args).
+    # Otherwise use strict parse_args to catch typos.
+    preliminary, remaining = parser.parse_known_args()
+    if preliminary.solver_root and remaining:
+        args = preliminary
+        args._extra_solver_args = remaining
+    else:
+        args = parser.parse_args()
+        args._extra_solver_args = []
+
+    # Handle --register
+    if args.register:
+        if not args.solver_root:
+            parser.error("--register requires --solver-root")
+        if not args.solver_python:
+            parser.error("--register requires --solver-python")
+        root = Path(args.solver_root).resolve()
+        py = Path(args.solver_python).resolve()
+        if not py.exists():
+            parser.error(f"Python not found: {py}")
+        for name, rel in _SOLVER_REL_PATHS.items():
+            script = root / rel
+            if not script.exists():
+                parser.error(f"Solver script not found: {script}")
+        # Verify imports resolve correctly (without running any solver)
+        site_packages = subprocess.check_output(
+            [str(py), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        check = subprocess.run(
+            [str(py), "-S", "-c",
+             f"import sys; sys.path.insert(0, '{root / 'src'}'); sys.path.append('{site_packages}'); "
+             f"import simsopt; print('simsopt:', simsopt.__file__); "
+             f"from simsopt.geo.boozersurface import BoozerSurface; print('boozersurface: OK')"],
+            capture_output=True, text=True,
+        )
+        if check.returncode != 0:
+            parser.error(f"Import validation failed:\n{check.stderr}")
+        # Verify imports resolve to the requested root
+        for line in check.stdout.strip().splitlines():
+            print(f"  {line}", file=sys.stderr)
+            if "simsopt:" in line and str(root) not in line:
+                parser.error(f"simsopt resolves to wrong location: {line}\nExpected: {root}/src/simsopt/")
+        git_meta = _get_git_metadata(root)
+        config = _load_solver_config()
+        config[str(root)] = {"python": str(py), **git_meta}
+        _save_solver_config(config)
+        print(f"Registered {root} → {py}", file=sys.stderr)
+        print(f"  commit: {git_meta.get('solver_commit', '?')}, branch: {git_meta.get('solver_branch', '?')}")
+        sys.exit(0)
 
     # Validate ALM constraints
     if args.alm and args.solver == "stage2":
@@ -357,21 +501,24 @@ def _run_experiment(args: argparse.Namespace) -> None:
     length_target >= 1.75) are enforced in the solver code itself, not here.
     """
 
-    # Resolve solver and equilibrium
-    # ALM mode uses the alm worktree's single-stage solver
-    if args.alm and args.solver == "single-stage":
-        solver_script = (
-            SIMSOPT_ROOT_ALM / "examples" / "single_stage_optimization"
-            / "SINGLE_STAGE" / "single_stage_banana_example.py"
-        )
+    # Resolve solver variant (handles --solver-root, ALM, and default)
+    # For ALM without --solver-root, use the ALM worktree with the default Python (direct invocation)
+    _alm_default_root = Path("/Users/suhjungdae/code/hbt-compare/wt/alm")
+    _using_alm_default = args.alm and args.solver == "single-stage" and not args.solver_root
+
+    if _using_alm_default:
+        # ALM default: use candidate-fixed Python with ALM worktree's solver script (direct, no launcher)
+        solver_script = _alm_default_root / _SOLVER_REL_PATHS[args.solver]
+        cmd_prefix = [_DEFAULT_PYTHON]
+        git_meta = _get_git_metadata(_alm_default_root)
     else:
-        solver_script = SOLVERS[args.solver]
+        cmd_prefix, solver_script, git_meta = _resolve_solver(args)
     plasma_surf = EQUILIBRIUM_FILES.get(args.equilibrium, args.equilibrium)
 
     # Build CLI args for the solver
     cli_args = _build_cli_args(args, plasma_surf)
     if not cli_args:
-        _emit_error("failed to resolve Stage 2 seed for single-stage", 0.0, args)
+        _emit_error("failed to resolve Stage 2 seed for single-stage", 0.0, args, git_meta)
         return
 
     env = os.environ.copy()
@@ -385,7 +532,7 @@ def _run_experiment(args: argparse.Namespace) -> None:
         precheck_dir = OUTPUT_BASE / f"precheck_{int(time.time() * 1000)}"
         precheck_dir.mkdir(parents=True, exist_ok=True)
         precheck_args = cli_args + ["--init-only", "--output-root", str(precheck_dir)]
-        precheck_cmd = [PYTHON, str(solver_script)] + precheck_args
+        precheck_cmd = cmd_prefix + [str(solver_script)] + precheck_args
         precheck_log = precheck_dir / "precheck.log"
         try:
             with open(precheck_log, "w") as lf:
@@ -407,11 +554,11 @@ def _run_experiment(args: argparse.Namespace) -> None:
                     feedback += "Boozer surface self-intersects. Try a different seed."
                 else:
                     feedback += f"Run dir: {precheck_dir}\n{tail[:500]}"
-                _emit_error(feedback, 0.0, args)
+                _emit_error(feedback, 0.0, args, git_meta)
                 shutil.rmtree(precheck_dir, ignore_errors=True)
                 return
         except subprocess.TimeoutExpired:
-            _emit_error("Boozer init pre-check timed out after 180s", 0.0, args)
+            _emit_error("Boozer init pre-check timed out after 180s", 0.0, args, git_meta)
             shutil.rmtree(precheck_dir, ignore_errors=True)
             return
         finally:
@@ -424,7 +571,7 @@ def _run_experiment(args: argparse.Namespace) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     cli_args.extend(["--output-root", str(run_dir)])
 
-    cmd = [PYTHON, str(solver_script)] + cli_args
+    cmd = cmd_prefix + [str(solver_script)] + cli_args
 
     log_path = run_dir / "run.log"
     t0 = time.monotonic()
@@ -440,10 +587,10 @@ def _run_experiment(args: argparse.Namespace) -> None:
             )
         returncode = result.returncode
     except subprocess.TimeoutExpired:
-        _emit_error(f"timeout after {args.timeout}s", time.monotonic() - t0, args)
+        _emit_error(f"timeout after {args.timeout}s", time.monotonic() - t0, args, git_meta)
         return
     except Exception as exc:
-        _emit_error(str(exc), time.monotonic() - t0, args)
+        _emit_error(str(exc), time.monotonic() - t0, args, git_meta)
         return
 
     elapsed = time.monotonic() - t0
@@ -461,13 +608,13 @@ def _run_experiment(args: argparse.Namespace) -> None:
                 f"Try a different seed (different Stage 2 params or equilibrium). "
                 f"Run dir: {run_dir}"
             )
-        _emit_error(feedback, elapsed, args)
+        _emit_error(feedback, elapsed, args, git_meta)
         return
 
     # Parse results.json
     results_files = list(run_dir.rglob("results.json"))
     if not results_files:
-        _emit_error("no results.json found", elapsed, args)
+        _emit_error("no results.json found", elapsed, args, git_meta)
         return
 
     with open(results_files[0]) as f:
@@ -491,6 +638,8 @@ def _run_experiment(args: argparse.Namespace) -> None:
         "iterations": metrics.get("iterations"),
         "elapsed": round(elapsed, 1),
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "solver_commit": git_meta.get("solver_commit"),
+        "solver_branch": git_meta.get("solver_branch"),
         "params": _extract_params(args),
     }
 
@@ -662,6 +811,8 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
         str(args.banana_surf_radius),
     ]
 
+    extra = getattr(args, '_extra_solver_args', [])
+
     if args.solver == "stage2":
         return common + [
             "--major-radius",
@@ -700,7 +851,7 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.basin_stepsize),
             "--basin-seed",
             str(args.basin_seed),
-        ]
+        ] + extra
     else:
         # Resolve Stage 2 seed — searches stage2_seeds/ and Columbia DATABASE
         seed_path = _resolve_stage2_seed(args, plasma_surf)
@@ -764,7 +915,7 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
                 "--alm-mu-increase", str(args.alm_mu_increase),
                 "--alm-tol", str(args.alm_tol),
             ]
-        return cli
+        return cli + extra
 
 
 def _extract_params(args: argparse.Namespace) -> dict:
@@ -827,6 +978,12 @@ def _extract_params(args: argparse.Namespace) -> dict:
                 "alm_mu_increase": args.alm_mu_increase,
                 "alm_tol": args.alm_tol,
             })
+    # Record solver variant and any extra args forwarded to the solver
+    if getattr(args, 'solver_root', None):
+        shared["solver_root"] = args.solver_root
+    extra = getattr(args, '_extra_solver_args', [])
+    if extra:
+        shared["extra_solver_args"] = extra
     return shared
 
 
@@ -845,7 +1002,8 @@ def _append_jsonl(record: dict) -> None:
         fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def _emit_error(reason: str, elapsed: float, args: argparse.Namespace) -> None:
+def _emit_error(reason: str, elapsed: float, args: argparse.Namespace,
+                git_meta: dict | None = None) -> None:
     output = {
         "source": "local",
         "solver": args.solver,
@@ -859,6 +1017,8 @@ def _emit_error(reason: str, elapsed: float, args: argparse.Namespace) -> None:
         "elapsed": round(elapsed, 1),
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "feedback": reason,
+        "solver_commit": (git_meta or {}).get("solver_commit"),
+        "solver_branch": (git_meta or {}).get("solver_branch"),
         "params": _extract_params(args),
     }
     print(json.dumps(output))
