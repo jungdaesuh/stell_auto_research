@@ -318,6 +318,14 @@ def main() -> None:
         help="Stage 2: RNG seed for basin-hopping (-1 = random). Set for reproducibility.",
     )
 
+    # --- Checkpoint (single-stage only) ---
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=0,
+        help="Single-stage: save checkpoint every N accepted iterations (0 = disabled).",
+    )
+
     # --- Single-stage only ---
     parser.add_argument("--iota-target", type=float, default=0.15)
     parser.add_argument("--vol-target", type=float, default=0.10)
@@ -911,6 +919,8 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             "--basin-seed",
             str(args.basin_seed),
         ]
+        if args.checkpoint_every > 0:
+            cli += ["--checkpoint-every", str(args.checkpoint_every)]
         if args.alm:
             cli += [
                 "--alm",
@@ -972,6 +982,7 @@ def _extract_params(args: argparse.Namespace) -> dict:
                 "ss_length_weight": args.ss_length_weight,
                 "maxcor": args.maxcor,
                 "boozer_stage": args.boozer_stage,
+                "checkpoint_every": args.checkpoint_every,
                 "alm": args.alm,
             }
         )
