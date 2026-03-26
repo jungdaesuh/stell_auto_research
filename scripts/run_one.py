@@ -118,10 +118,15 @@ def _resolve_solver(args) -> tuple[list[str], Path, dict]:
         sys.exit(1)
 
     # Detect site-packages from the python interpreter
-    site_packages = subprocess.check_output(
-        [solver_python, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-        text=True, stderr=subprocess.DEVNULL,
-    ).strip()
+    try:
+        site_packages = subprocess.check_output(
+            [solver_python, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        print(f"ERROR: Cannot detect site-packages from {solver_python}: {e}", file=sys.stderr)
+        print(f"Re-register with: python scripts/run_one.py --register --solver-root {solver_root} --solver-python /path/to/python", file=sys.stderr)
+        sys.exit(1)
 
     # Use the -S launcher pattern: bypass editable installs, prepend solver_root/src
     cmd_prefix = [
