@@ -56,7 +56,7 @@ The minimum acceptable run artifact set is:
 
 - `results.json`
 - `topology_archive.jsonl`
-- replayable checkpoint directories with `biot_savart.json` and `surf_{name}.json`
+- replayable checkpoint directories with `biot_savart.json` and `surf_outer.json`
 
 If `topology_archive.jsonl` is missing, the run is incomplete for promotion.
 
@@ -148,9 +148,11 @@ Use:
 - `/Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimization/qfm_archive_evaluator.py`
 - `/Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimization/residue_archive_probe.py`
 
-The residue probe is no longer treated as a blocker. It is an available
-diagnostic path, though it is still more expensive than QFM and may require
-careful resonance targeting.
+The residue probe is currently blocked: `Spec.computational_boundary` is a
+read-only property with no setter, so `residue_archive_probe.py` crashes on
+assignment. This requires an upstream fix in the columbia-spec-wrapper. Use
+QFM as the available Tier 3 diagnostic; residue is deferred until the API
+is fixed.
 
 ### Stage 4: Promotion Decision
 
@@ -207,7 +209,7 @@ Do not:
 - promote a run without replayable checkpoint artifacts
 - treat every topology score as globally comparable across fidelities
 - assume final iterate is the right artifact to validate
-- treat residue as blocked by wrapper/API incompatibility
+- attempt residue probe until `Spec.computational_boundary` setter is fixed upstream
 
 ## Minimal Output Contract
 

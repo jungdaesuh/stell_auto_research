@@ -1081,12 +1081,30 @@ def _append_jsonl(record: dict) -> None:
 
 
 def _salvage_partial_artifacts(run_dir: Path, plasma_surf: str, args: argparse.Namespace) -> None:
-    """On timeout, copy whatever topology artifacts the solver wrote before being killed."""
+    """On timeout, copy whatever solver artifacts exist — archive, checkpoints, or both."""
     try:
-        src_candidates = list(run_dir.rglob("topology_archive.jsonl"))
-        if not src_candidates:
+        # Find the solver output directory: look for any solver artifact
+        src_dir = None
+        for marker in ("topology_archive.jsonl", "results.json", "biot_savart_opt.json"):
+            hits = list(run_dir.rglob(marker))
+            if hits:
+                src_dir = hits[0].parent
+                break
+        if src_dir is None:
+            # Fall back: check for checkpoint dirs directly under run_dir subdirs
+            for subdir in run_dir.iterdir():
+                if subdir.is_dir():
+                    for item in subdir.iterdir():
+                        if item.is_dir() and (
+                            item.name == "best_topology"
+                            or item.name.startswith("checkpoint_iter")
+                        ):
+                            src_dir = subdir
+                            break
+                if src_dir:
+                    break
+        if src_dir is None:
             return
-        src_dir = src_candidates[0].parent
         ts = int(time.time() * 1000)
         artifact_dir = (
             SINGLE_STAGE_STORE
@@ -1094,16 +1112,18 @@ def _salvage_partial_artifacts(run_dir: Path, plasma_surf: str, args: argparse.N
             / f"timeout-{ts}"
         )
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        # Copy topology_archive.jsonl and best_topology/ if they exist
         for item in src_dir.iterdir():
-            if item.is_file() and item.name in ("topology_archive.jsonl", "results.json"):
+            if item.is_file() and item.name in (
+                "topology_archive.jsonl", "results.json",
+                "biot_savart_opt.json", "biot_savart_init.json",
+            ):
                 shutil.copy2(item, artifact_dir / item.name)
             elif item.is_dir() and (
                 item.name == "best_topology"
                 or item.name.startswith("checkpoint_iter")
             ):
                 shutil.copytree(item, artifact_dir / item.name, dirs_exist_ok=True)
-        print(f"Salvaged partial topology artifacts to {artifact_dir}", file=sys.stderr)
+        print(f"Salvaged partial artifacts to {artifact_dir}", file=sys.stderr)
     except Exception as exc:
         print(f"Failed to salvage artifacts: {exc}", file=sys.stderr)
 

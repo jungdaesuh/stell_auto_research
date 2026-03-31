@@ -36,7 +36,7 @@ python scripts/run_one.py \
 
 **Always pass all of these:**
 - `--solver-root` — Columbia solver path
-- `--checkpoint-every 10` — saves replayable artifacts (biot_savart.json, surf_{name}.json)
+- `--checkpoint-every 10` — saves replayable artifacts (biot_savart.json, surf_outer.json, surf_inner.json)
 - `--topology-scorer-every 10` — runs confinement scoring, writes `topology_archive.jsonl`
 - `--ftol 1e-15 --gtol 1e-15` — forces many iterations. Without these, optimized seeds converge in 1 iteration because the solver's mpol-based tolerance table (e.g. mpol=8 → ftol=1e-5) is already satisfied.
 - `--curvature-threshold 40` and `--curvature-weight 0.1`
@@ -62,11 +62,9 @@ python scripts/run_one.py \
 
 The Columbia solver writes:
 - `topology_archive.jsonl` — confinement score at each scored checkpoint
-- `checkpoint_iter*/` — replayable artifacts (`biot_savart.json`, `surf_{name}.json`)
+- `checkpoint_iter*/` — replayable artifacts (`biot_savart.json`, `surf_outer.json`, `surf_inner.json`)
 - `best_topology/` — checkpoint with highest confinement score (same artifact format)
-- Standard outputs (`biot_savart_opt.json`, `surf_opt.json`, `surf_opt_{name}.json`, `results.json`)
-
-Note: Checkpoint directories do NOT contain legacy-named `surf_outer.json` or `surf_opt.json`. They contain `surf_{name}.json` where `{name}` comes from the solver's surface_data entries. For Poincare replay, copy and rename (see Tier 3).
+- Standard outputs (`biot_savart_opt.json`, `surf_opt.json`, `results.json`)
 
 ### Single-Stage Objective
 ```
@@ -206,10 +204,10 @@ PYTHONPATH=/Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimiz
 /Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimization/POINCARE_PLOTTING/poincare_surfaces.py
 ```
 
-The checkpoint dir must contain the legacy-named files. Copy from checkpoint artifacts:
+The checkpoint dir contains `biot_savart.json` and `surf_outer.json`. The Poincare script expects `_opt` suffixes. Copy before running:
 ```bash
 cp <checkpoint_dir>/biot_savart.json <checkpoint_dir>/biot_savart_opt.json
-cp <checkpoint_dir>/surf_<name>.json <checkpoint_dir>/surf_opt.json
+cp <checkpoint_dir>/surf_outer.json <checkpoint_dir>/surf_opt.json
 ```
 
 Output: `PoincareMetrics_opt.json` with `validation_status`, `survived_lines`, `survival_fraction`.
@@ -289,7 +287,7 @@ Phase 3 — Frontier evaluation:
 6. Shortlist by checkpoint-level topology (best checkpoint from topology_archive.jsonl).
 7. Run strict Poincare on shortlisted checkpoints.
 8. Run QFM on shortlisted checkpoints.
-9. Run residue probe if API is available.
+9. Run residue probe when `Spec.computational_boundary` setter is fixed upstream (currently blocked).
 10. Make promote/hold/reject decisions per the selection policy.
 
 ## The Loop
