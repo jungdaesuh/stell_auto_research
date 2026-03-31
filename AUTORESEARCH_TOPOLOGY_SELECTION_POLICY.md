@@ -141,7 +141,6 @@ Only for shortlisted checkpoints, run:
 
 - strict Poincare
 - QFM archive evaluation
-- residue archive probe
 
 Use:
 
@@ -229,7 +228,7 @@ For the current reopened frontier:
 
 1. continue broad `mpol/ntor` exploration
 2. shortlist by checkpoint-level topology, not final `J`
-3. run QFM and residue on the best checkpoint from each serious lane
+3. run QFM on the best checkpoint from each serious lane (residue deferred until setter fix)
 4. only then decide whether topology should move from selection into a
    second-phase optimization objective
 
