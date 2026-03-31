@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 # Paths — defaults (used when --solver-root is not specified)
-_DEFAULT_PYTHON = "/Users/suhjungdae/code/hbt-compare/envs/candidate-fixed/bin/python"
+_DEFAULT_PYTHON = "/opt/homebrew/Caskroom/miniforge/base/envs/columbia-jax-0.9.2/bin/python"
 _DEFAULT_SIMSOPT_ROOT = Path("/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed")
 EQUILIBRIA = Path("/Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA")
 OUTPUT_BASE = Path("/tmp/hbt_autoresearch")
@@ -160,6 +160,17 @@ EQUILIBRIUM_FILES = {
     "001490": "wout_nfp22ginsburg_000_001490.nc",
 }
 
+# Axis iota for each equilibrium — used to validate --iota-target matches.
+EQUILIBRIUM_AXIS_IOTA = {
+    "iota15": 0.1466, "iota15p": 0.15,
+    "iota16": 0.16, "iota17": 0.1697, "iota18": 0.18, "iota19": 0.19,
+    "iota20": 0.1980, "iota20p": 0.20,
+    "iota21": 0.21, "iota22": 0.22, "iota23": 0.23, "iota24": 0.24,
+    "iota25": 0.25, "iota26": 0.26, "iota27": 0.27, "iota28": 0.28,
+    "iota29": 0.29, "iota30": 0.30,
+    "001490": 0.2973,
+}
+
 
 def score_stage2(metrics: dict, args: argparse.Namespace) -> float:
     """Stage 2 scoring: field error + curvature excess + SI penalty."""
@@ -277,8 +288,8 @@ def main() -> None:
     parser.add_argument("--phi-center", type=float, default=0.06)
     parser.add_argument("--theta-width", type=float, default=0.1)
     parser.add_argument("--phi-width", type=float, default=0.03)
-    parser.add_argument("--ftol", type=float, default=1e-15)
-    parser.add_argument("--gtol", type=float, default=1e-15)
+    parser.add_argument("--ftol", type=float, default=None)
+    parser.add_argument("--gtol", type=float, default=None)
     parser.add_argument(
         "--squared-flux-weight",
         type=float,
@@ -318,12 +329,18 @@ def main() -> None:
         help="Stage 2: RNG seed for basin-hopping (-1 = random). Set for reproducibility.",
     )
 
-    # --- Checkpoint (single-stage only) ---
+    # --- Checkpoint & topology scoring (single-stage only) ---
     parser.add_argument(
         "--checkpoint-every",
         type=int,
         default=0,
         help="Single-stage: save checkpoint every N accepted iterations (0 = disabled).",
+    )
+    parser.add_argument(
+        "--topology-scorer-every",
+        type=int,
+        default=0,
+        help="Single-stage: run topology confinement scoring every N accepted iterations (0 = disabled). Writes topology_archive.jsonl.",
     )
 
     # --- Single-stage only ---
@@ -528,6 +545,26 @@ def _run_experiment(args: argparse.Namespace) -> None:
         cmd_prefix, solver_script, git_meta = _resolve_solver(args)
     plasma_surf = EQUILIBRIUM_FILES.get(args.equilibrium, args.equilibrium)
 
+    # Validate iota-target against equilibrium axis iota
+    if args.solver == "single-stage":
+        expected_iota = EQUILIBRIUM_AXIS_IOTA.get(args.equilibrium)
+        if expected_iota is not None and abs(args.iota_target - expected_iota) > 0.02:
+            print(
+                f"WARNING: --iota-target {args.iota_target} does not match "
+                f"equilibrium {args.equilibrium} axis iota {expected_iota}. "
+                f"This will produce a nonsensical run.",
+                file=sys.stderr,
+            )
+
+    # SSOT: curvature_threshold <= 40 for HBT coil fabrication
+    if args.curvature_threshold > 40:
+        print(
+            f"ERROR: --curvature-threshold {args.curvature_threshold} exceeds "
+            f"HBT fabrication limit of 40. Clamping to 40.",
+            file=sys.stderr,
+        )
+        args.curvature_threshold = 40
+
     # Build CLI args for the solver
     cli_args = _build_cli_args(args, plasma_surf)
     if not cli_args:
@@ -600,7 +637,13 @@ def _run_experiment(args: argparse.Namespace) -> None:
             )
         returncode = result.returncode
     except subprocess.TimeoutExpired:
-        _emit_error(f"timeout after {args.timeout}s", time.monotonic() - t0, args, git_meta)
+        # Salvage partial topology artifacts before reporting timeout
+        _salvage_partial_artifacts(run_dir, plasma_surf, args)
+        _emit_error(
+            f"timeout after {args.timeout}s. Partial artifacts may exist in run_dir. "
+            f"Run dir: {run_dir}",
+            time.monotonic() - t0, args, git_meta,
+        )
         return
     except Exception as exc:
         _emit_error(str(exc), time.monotonic() - t0, args, git_meta)
@@ -688,7 +731,7 @@ def _run_experiment(args: argparse.Namespace) -> None:
         bs_files = list(run_dir.rglob("biot_savart_opt.json"))
         results_files = list(run_dir.rglob("results.json"))
         if bs_files:
-            ts = int(time.time())
+            ts = int(time.time() * 1000)
             seed_dir = (
                 STAGE2_SEED_STORE
                 / f"outputs-{plasma_surf}"
@@ -705,8 +748,8 @@ def _run_experiment(args: argparse.Namespace) -> None:
     if args.solver == "single-stage" and output.get("status") == "pass":
         ss_files = list(run_dir.rglob("results.json"))
         if ss_files:
-            # Append timestamp to directory name so no run overwrites another
-            ts = int(time.time())
+            # Millisecond timestamp avoids collisions between concurrent runs
+            ts = int(time.time() * 1000)
             artifact_dir = (
                 SINGLE_STAGE_STORE
                 / f"outputs-{plasma_surf}"
@@ -717,8 +760,28 @@ def _run_experiment(args: argparse.Namespace) -> None:
             for artifact in src_dir.iterdir():
                 if artifact.is_file():
                     shutil.copy2(artifact, artifact_dir / artifact.name)
+            # Preserve topology subdirectories (best_topology/, checkpoint_iter*/)
+            for subdir in src_dir.iterdir():
+                if subdir.is_dir() and (
+                    subdir.name == "best_topology"
+                    or subdir.name.startswith("checkpoint_iter")
+                ):
+                    shutil.copytree(subdir, artifact_dir / subdir.name, dirs_exist_ok=True)
 
             output["single_stage_artifact_dir"] = str(artifact_dir)
+
+            # Verify topology archive was written when topology scoring was enabled
+            if args.topology_scorer_every > 0:
+                topo_archive = artifact_dir / "topology_archive.jsonl"
+                if topo_archive.exists():
+                    output["topology_archive_path"] = str(topo_archive)
+                else:
+                    print(
+                        f"WARNING: --topology-scorer-every {args.topology_scorer_every} "
+                        f"was set but topology_archive.jsonl was not produced. "
+                        f"The solver may not have run enough iterations.",
+                        file=sys.stderr,
+                    )
 
     # Keep crash logs for debugging, clean up successful runs
     if output.get("status") in ("crash", "fail"):
@@ -848,10 +911,6 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.theta_width),
             "--phi-width",
             str(args.phi_width),
-            "--ftol",
-            str(args.ftol),
-            "--gtol",
-            str(args.gtol),
             "--squared-flux-weight",
             str(args.squared_flux_weight),
             "--curvature-p-norm",
@@ -908,10 +967,6 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             str(args.ss_dist),
             "--maxcor",
             str(args.maxcor),
-            "--ftol",
-            str(args.ftol),
-            "--gtol",
-            str(args.gtol),
             "--basin-hops",
             str(args.basin_hops),
             "--basin-stepsize",
@@ -919,8 +974,14 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             "--basin-seed",
             str(args.basin_seed),
         ]
+        if args.ftol is not None:
+            cli += ["--ftol", str(args.ftol)]
+        if args.gtol is not None:
+            cli += ["--gtol", str(args.gtol)]
         if args.checkpoint_every > 0:
             cli += ["--checkpoint-every", str(args.checkpoint_every)]
+        if args.topology_scorer_every > 0:
+            cli += ["--topology-scorer-every", str(args.topology_scorer_every)]
         if args.alm:
             cli += [
                 "--alm",
@@ -983,6 +1044,7 @@ def _extract_params(args: argparse.Namespace) -> dict:
                 "maxcor": args.maxcor,
                 "boozer_stage": args.boozer_stage,
                 "checkpoint_every": args.checkpoint_every,
+                "topology_scorer_every": args.topology_scorer_every,
                 "alm": args.alm,
             }
         )
@@ -1016,6 +1078,34 @@ def _append_jsonl(record: dict) -> None:
         f.write(line)
         f.flush()
         fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _salvage_partial_artifacts(run_dir: Path, plasma_surf: str, args: argparse.Namespace) -> None:
+    """On timeout, copy whatever topology artifacts the solver wrote before being killed."""
+    try:
+        src_candidates = list(run_dir.rglob("topology_archive.jsonl"))
+        if not src_candidates:
+            return
+        src_dir = src_candidates[0].parent
+        ts = int(time.time() * 1000)
+        artifact_dir = (
+            SINGLE_STAGE_STORE
+            / f"outputs-{plasma_surf}"
+            / f"timeout-{ts}"
+        )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        # Copy topology_archive.jsonl and best_topology/ if they exist
+        for item in src_dir.iterdir():
+            if item.is_file() and item.name in ("topology_archive.jsonl", "results.json"):
+                shutil.copy2(item, artifact_dir / item.name)
+            elif item.is_dir() and (
+                item.name == "best_topology"
+                or item.name.startswith("checkpoint_iter")
+            ):
+                shutil.copytree(item, artifact_dir / item.name, dirs_exist_ok=True)
+        print(f"Salvaged partial topology artifacts to {artifact_dir}", file=sys.stderr)
+    except Exception as exc:
+        print(f"Failed to salvage artifacts: {exc}", file=sys.stderr)
 
 
 def _emit_error(reason: str, elapsed: float, args: argparse.Namespace,
