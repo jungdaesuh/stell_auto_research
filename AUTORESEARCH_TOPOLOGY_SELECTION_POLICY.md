@@ -175,7 +175,7 @@ Promote a checkpoint when:
 - strict Poincare survival is within 2 field lines of or better than the
   family baseline (e.g. 48/50 vs 50/50 is promotable)
 - medium scorer and strict Poincare are directionally consistent
-- QFM and residue do not reveal an obvious hidden topology failure mode
+- QFM does not reveal an obvious hidden topology failure mode
 
 Hold a checkpoint when:
 
@@ -197,9 +197,7 @@ Use compute in this order:
 2. checkpoint ranking using medium topology
 3. strict Poincare on the shortlist
 4. QFM on the shortlist
-5. residue on the shortlist
-
-This avoids paying residue cost on weak candidates.
+5. residue on the shortlist (currently blocked — deferred until `Spec.computational_boundary` setter is fixed)
 
 ## What Autoresearch Should Not Do
 
