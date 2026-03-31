@@ -145,13 +145,11 @@ Only for shortlisted checkpoints, run:
 Use:
 
 - `/Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimization/qfm_archive_evaluator.py`
-- `/Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimization/residue_archive_probe.py`
 
-The residue probe is currently blocked: `Spec.computational_boundary` is a
-read-only property with no setter, so `residue_archive_probe.py` crashes on
-assignment. This requires an upstream fix in the columbia-spec-wrapper. Use
-QFM as the available Tier 3 diagnostic; residue is deferred until the API
-is fixed.
+The residue probe (`residue_archive_probe.py`) is currently blocked:
+`Spec.computational_boundary` is a read-only property with no setter.
+This requires an upstream fix in the columbia-spec-wrapper. Do not
+attempt to run residue until the API is fixed.
 
 ### Stage 4: Promotion Decision
 
@@ -196,7 +194,6 @@ Use compute in this order:
 2. checkpoint ranking using medium topology
 3. strict Poincare on the shortlist
 4. QFM on the shortlist
-5. residue on the shortlist (currently blocked — deferred until `Spec.computational_boundary` setter is fixed)
 
 ## What Autoresearch Should Not Do
 
