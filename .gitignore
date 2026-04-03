@@ -21,3 +21,4 @@ stage2_seeds/
 
 # Environment (machine-specific paths)
 .env
+.solver_config.json
