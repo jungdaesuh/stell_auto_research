@@ -25,6 +25,7 @@ import math
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_PATH = REPO_ROOT / "results.jsonl"
@@ -172,6 +173,37 @@ def _where(solver=None, eq=None, order=None, status=None):
     return (" AND ".join(clauses) or "1=1"), params
 
 
+def _validate_score_filters(args: argparse.Namespace) -> None:
+    if getattr(args, "scored_only", False) and getattr(args, "pass_only_scored", False):
+        raise SystemExit("--scored-only and --pass-only-scored are mutually exclusive")
+
+
+def _apply_score_filters(
+    where: str,
+    params: dict,
+    args: argparse.Namespace,
+) -> tuple[str, dict]:
+    _validate_score_filters(args)
+    if getattr(args, "pass_only_scored", False):
+        where += " AND score IS NOT NULL AND status='pass'"
+    elif getattr(args, "scored_only", False):
+        where += " AND score IS NOT NULL"
+    return where, params
+
+
+def _add_score_filter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--scored-only",
+        action="store_true",
+        help="Restrict to rows with non-null score.",
+    )
+    parser.add_argument(
+        "--pass-only-scored",
+        action="store_true",
+        help="Restrict to passing rows with non-null score.",
+    )
+
+
 def _row_params(row) -> dict:
     """Extract the params dict from a database row."""
     raw = row["params_json"]
@@ -224,6 +256,876 @@ def _compact_params(p: dict) -> str:
         if v is not None and abs(v - default_v) > 1e-9:
             parts.append(f"{abbrev.get(k, k)}={v}")
     return " ".join(parts)
+
+
+def _rankdata(values: Sequence[float]) -> list[float]:
+    """Return average ranks for the input values."""
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(indexed):
+        j = i + 1
+        while j < len(indexed) and indexed[j][1] == indexed[i][1]:
+            j += 1
+        avg_rank = (i + j - 1) / 2.0 + 1.0
+        for k in range(i, j):
+            ranks[indexed[k][0]] = avg_rank
+        i = j
+    return ranks
+
+
+def _spearman_correlation(xs: Sequence[float], ys: Sequence[float]) -> float | None:
+    """Compute Spearman rank correlation for two equal-length numeric sequences."""
+    if len(xs) != len(ys):
+        raise ValueError("xs and ys must have the same length")
+    if len(xs) < 2:
+        return None
+    rx = _rankdata(xs)
+    ry = _rankdata(ys)
+    mean_x = sum(rx) / len(rx)
+    mean_y = sum(ry) / len(ry)
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(rx, ry))
+    var_x = sum((x - mean_x) ** 2 for x in rx)
+    var_y = sum((y - mean_y) ** 2 for y in ry)
+    if var_x == 0 or var_y == 0:
+        return None
+    return cov / math.sqrt(var_x * var_y)
+
+
+def _status_counts(
+    db: sqlite3.Connection,
+    where: str = "1=1",
+    params: dict | None = None,
+) -> dict[str, int]:
+    rows = db.execute(
+        f"SELECT status, COUNT(*) AS cnt FROM runs WHERE {where} GROUP BY status",
+        params or {},
+    ).fetchall()
+    return {row["status"]: row["cnt"] for row in rows}
+
+
+def _solver_counts(
+    db: sqlite3.Connection,
+    where: str = "1=1",
+    params: dict | None = None,
+) -> dict[str, int]:
+    rows = db.execute(
+        f"SELECT solver, COUNT(*) AS cnt FROM runs WHERE {where} GROUP BY solver",
+        params or {},
+    ).fetchall()
+    return {row["solver"]: row["cnt"] for row in rows}
+
+
+def _solver_score_rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
+    return db.execute(
+        """
+        SELECT
+            solver,
+            COUNT(*) AS scored_runs,
+            SUM(status='pass') AS pass_runs,
+            AVG(score) AS scored_mean_score,
+            AVG(CASE WHEN status='pass' THEN score END) AS pass_mean_score,
+            MAX(score) AS best_score,
+            SUM(score > 0.95) AS gt95_runs,
+            SUM(score > 0.98) AS gt98_runs
+        FROM runs
+        WHERE score IS NOT NULL
+        GROUP BY solver
+        ORDER BY best_score DESC
+        """
+    ).fetchall()
+
+
+def _ct_summary_rows(db: sqlite3.Connection, solver: str) -> list[sqlite3.Row]:
+    return db.execute(
+        """
+        SELECT
+            p_curvature_threshold AS ct,
+            COUNT(*) AS total_runs,
+            SUM(status='pass') AS pass_runs,
+            SUM(status='fail') AS fail_runs,
+            SUM(status='crash') AS crash_runs,
+            AVG(score) AS scored_mean_score,
+            AVG(CASE WHEN status='pass' THEN score END) AS pass_mean_score,
+            MAX(score) AS best_score
+        FROM runs
+        WHERE solver=:solver
+          AND p_curvature_threshold IN (20, 40)
+          AND score IS NOT NULL
+        GROUP BY p_curvature_threshold
+        ORDER BY p_curvature_threshold
+        """,
+        {"solver": solver},
+    ).fetchall()
+
+
+def _metric_pairs(
+    db: sqlite3.Connection,
+    metric_col: str,
+) -> tuple[list[float], list[float]]:
+    rows = db.execute(
+        f"""
+        SELECT {metric_col} AS metric, score
+        FROM runs
+        WHERE {metric_col} IS NOT NULL
+          AND score IS NOT NULL
+        """
+    ).fetchall()
+    xs = [row["metric"] for row in rows]
+    ys = [row["score"] for row in rows]
+    return xs, ys
+
+
+def _format_float(value: float | None, digits: int = 4) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.{digits}f}"
+
+
+def _gini_impurity(rows: Sequence[sqlite3.Row], positive_status: str) -> float:
+    if not rows:
+        return 0.0
+    positive = sum(1 for row in rows if row["status"] == positive_status)
+    p = positive / len(rows)
+    return 1.0 - p * p - (1.0 - p) * (1.0 - p)
+
+
+def _candidate_thresholds(values: Sequence[float]) -> list[float]:
+    unique = sorted(set(values))
+    if len(unique) < 2:
+        return []
+    if len(unique) <= 16:
+        return [(a + b) / 2.0 for a, b in zip(unique, unique[1:])]
+
+    thresholds: list[float] = []
+    for frac in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+        idx = max(1, min(len(unique) - 1, round(frac * (len(unique) - 1))))
+        threshold = (unique[idx - 1] + unique[idx]) / 2.0
+        if threshold not in thresholds:
+            thresholds.append(threshold)
+    return thresholds
+
+
+def _split_rows(
+    rows: Sequence[sqlite3.Row],
+    column: str,
+    threshold: float,
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    left: list[sqlite3.Row] = []
+    right: list[sqlite3.Row] = []
+    for row in rows:
+        value = row[column]
+        if value is None:
+            continue
+        if value <= threshold:
+            left.append(row)
+        else:
+            right.append(row)
+    return left, right
+
+
+def _best_univariate_split(
+    rows: Sequence[sqlite3.Row],
+    positive_status: str,
+    min_leaf: int,
+) -> dict | None:
+    if len(rows) < min_leaf * 2:
+        return None
+
+    parent_gini = _gini_impurity(rows, positive_status)
+    best: dict | None = None
+    for feature in _PARAM_FIELDS:
+        column = f"p_{feature}"
+        values = [row[column] for row in rows if row[column] is not None]
+        for threshold in _candidate_thresholds(values):
+            left, right = _split_rows(rows, column, threshold)
+            if len(left) < min_leaf or len(right) < min_leaf:
+                continue
+            weighted_child_gini = (
+                len(left) / len(rows) * _gini_impurity(left, positive_status)
+                + len(right) / len(rows) * _gini_impurity(right, positive_status)
+            )
+            gain = parent_gini - weighted_child_gini
+            if gain <= 0:
+                continue
+            split = {
+                "feature": feature,
+                "threshold": threshold,
+                "gain": gain,
+                "left_count": len(left),
+                "right_count": len(right),
+                "left_positive": sum(1 for row in left if row["status"] == positive_status),
+                "right_positive": sum(1 for row in right if row["status"] == positive_status),
+            }
+            if best is None or float(split["gain"]) > float(best["gain"]):
+                best = split
+    return best
+
+
+def _tree_node_stats(
+    rows: Sequence[sqlite3.Row],
+    positive_status: str,
+    negative_status: str,
+) -> dict[str, float | int | str]:
+    positive = sum(1 for row in rows if row["status"] == positive_status)
+    negative = sum(1 for row in rows if row["status"] == negative_status)
+    total = len(rows)
+    positive_rate = positive / total if total else 0.0
+    prediction = positive_status if positive >= negative else negative_status
+    return {
+        "samples": total,
+        "positive": positive,
+        "negative": negative,
+        "positive_rate": positive_rate,
+        "prediction": prediction,
+    }
+
+
+def _build_rule_tree(
+    rows: Sequence[sqlite3.Row],
+    positive_status: str,
+    negative_status: str,
+    max_depth: int,
+    min_leaf: int,
+    min_gain: float,
+    depth: int = 0,
+) -> dict:
+    node = _tree_node_stats(rows, positive_status, negative_status)
+    split = _best_univariate_split(rows, positive_status, min_leaf)
+    if (
+        depth >= max_depth
+        or split is None
+        or float(split["gain"]) < min_gain
+        or node["positive"] == 0
+        or node["negative"] == 0
+    ):
+        return node
+
+    left_rows, right_rows = _split_rows(rows, f"p_{split['feature']}", float(split["threshold"]))
+    node["feature"] = split["feature"]
+    node["threshold"] = split["threshold"]
+    node["gain"] = split["gain"]
+    node["left"] = _build_rule_tree(
+        left_rows,
+        positive_status,
+        negative_status,
+        max_depth=max_depth,
+        min_leaf=min_leaf,
+        min_gain=min_gain,
+        depth=depth + 1,
+    )
+    node["right"] = _build_rule_tree(
+        right_rows,
+        positive_status,
+        negative_status,
+        max_depth=max_depth,
+        min_leaf=min_leaf,
+        min_gain=min_gain,
+        depth=depth + 1,
+    )
+    return node
+
+
+def _predict_tree(node: dict, row: sqlite3.Row) -> str:
+    feature = node.get("feature")
+    if not feature:
+        return str(node["prediction"])
+    value = row[f"p_{feature}"]
+    if value is None:
+        return str(node["prediction"])
+    branch = "left" if value <= node["threshold"] else "right"
+    return _predict_tree(node[branch], row)
+
+
+def _confusion_counts(
+    node: dict,
+    rows: Sequence[sqlite3.Row],
+    positive_status: str,
+    negative_status: str,
+) -> tuple[int, int, int, int]:
+    tp = fp = tn = fn = 0
+    for row in rows:
+        predicted = _predict_tree(node, row)
+        actual = row["status"]
+        if actual == positive_status and predicted == positive_status:
+            tp += 1
+        elif actual == negative_status and predicted == positive_status:
+            fp += 1
+        elif actual == negative_status and predicted == negative_status:
+            tn += 1
+        elif actual == positive_status and predicted == negative_status:
+            fn += 1
+    return tp, fp, tn, fn
+
+
+def _leaf_rule_rows(node: dict, clauses: Sequence[str] | None = None) -> list[dict]:
+    active_clauses = list(clauses or [])
+    feature = node.get("feature")
+    if not feature:
+        return [
+            {
+                "rule": " AND ".join(active_clauses) if active_clauses else "ALL",
+                "prediction": node["prediction"],
+                "samples": node["samples"],
+                "positive": node["positive"],
+                "negative": node["negative"],
+                "positive_rate": node["positive_rate"],
+            }
+        ]
+    threshold = node["threshold"]
+    left_clause = f"{feature} <= {threshold:g}"
+    right_clause = f"{feature} > {threshold:g}"
+    return _leaf_rule_rows(node["left"], active_clauses + [left_clause]) + _leaf_rule_rows(
+        node["right"], active_clauses + [right_clause]
+    )
+
+
+def _split_rows_table(node: dict, depth: int = 0) -> list[dict]:
+    feature = node.get("feature")
+    if not feature:
+        return []
+    left = node["left"]
+    right = node["right"]
+    rows = [
+        {
+            "depth": depth,
+            "feature": feature,
+            "threshold": node["threshold"],
+            "gain": node["gain"],
+            "left_samples": left["samples"],
+            "left_positive_rate": left["positive_rate"],
+            "right_samples": right["samples"],
+            "right_positive_rate": right["positive_rate"],
+        }
+    ]
+    rows.extend(_split_rows_table(left, depth + 1))
+    rows.extend(_split_rows_table(right, depth + 1))
+    return rows
+
+
+def _feature_coverage_rows(rows: Sequence[sqlite3.Row]) -> list[dict]:
+    coverage: list[dict] = []
+    for feature in _PARAM_FIELDS:
+        column = f"p_{feature}"
+        present = [row[column] for row in rows if row[column] is not None]
+        unique = sorted(set(present))
+        preview = ", ".join(str(value) for value in unique[:6])
+        if len(unique) > 6:
+            preview += ", ..."
+        coverage.append(
+            {
+                "feature": feature,
+                "non_null": len(present),
+                "distinct": len(unique),
+                "values": preview or "N/A",
+            }
+        )
+    return coverage
+
+
+def _best_feature_splits(
+    rows: Sequence[sqlite3.Row],
+    positive_status: str,
+    min_leaf: int,
+) -> list[dict]:
+    parent_gini = _gini_impurity(rows, positive_status)
+    splits: list[dict] = []
+    for feature in _PARAM_FIELDS:
+        column = f"p_{feature}"
+        values = [row[column] for row in rows if row[column] is not None]
+        best_feature_split: dict | None = None
+        for threshold in _candidate_thresholds(values):
+            left, right = _split_rows(rows, column, threshold)
+            if len(left) < min_leaf or len(right) < min_leaf:
+                continue
+            weighted_child_gini = (
+                len(left) / len(rows) * _gini_impurity(left, positive_status)
+                + len(right) / len(rows) * _gini_impurity(right, positive_status)
+            )
+            gain = parent_gini - weighted_child_gini
+            if gain <= 0:
+                continue
+            candidate = {
+                "feature": feature,
+                "threshold": threshold,
+                "gain": gain,
+                "left_count": len(left),
+                "right_count": len(right),
+                "left_positive": sum(1 for row in left if row["status"] == positive_status),
+                "right_positive": sum(1 for row in right if row["status"] == positive_status),
+            }
+            if (
+                best_feature_split is None
+                or float(candidate["gain"]) > float(best_feature_split["gain"])
+            ):
+                best_feature_split = candidate
+        if best_feature_split is not None:
+            splits.append(best_feature_split)
+    return sorted(splits, key=lambda split: float(split["gain"]), reverse=True)
+
+
+def build_crash_model_markdown(args: argparse.Namespace) -> str:
+    db = _get_db()
+    positive_status = args.target_status
+    negative_status = "pass" if positive_status == "crash" else "crash"
+    where, params = _where(solver=args.solver, eq=args.eq, order=args.order)
+    where += " AND status IN (:positive_status, :negative_status)"
+    params["positive_status"] = positive_status
+    params["negative_status"] = negative_status
+    rows = db.execute(f"SELECT * FROM runs WHERE {where}", params).fetchall()
+    if not rows:
+        raise SystemExit("No rows match the selected cohort for crash/pass modeling")
+
+    tree = _build_rule_tree(
+        rows,
+        positive_status=positive_status,
+        negative_status=negative_status,
+        max_depth=args.max_depth,
+        min_leaf=args.min_leaf,
+        min_gain=args.min_gain,
+    )
+    tp, fp, tn, fn = _confusion_counts(tree, rows, positive_status, negative_status)
+    total = len(rows)
+    accuracy = (tp + tn) / total if total else None
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall = tp / (tp + fn) if (tp + fn) else None
+    base_rate = sum(1 for row in rows if row["status"] == positive_status) / total
+    leaf_rows = sorted(
+        _leaf_rule_rows(tree),
+        key=lambda row: (-float(row["positive_rate"]), -int(row["samples"])),
+    )
+    split_rows = _split_rows_table(tree)
+    coverage_rows = _feature_coverage_rows(rows)
+    best_feature_splits = _best_feature_splits(rows, positive_status, args.min_leaf)
+
+    lines: list[str] = []
+    lines.append("# Crash/Pass Rule Model")
+    lines.append("")
+    lines.append("## Cohort")
+    lines.append("")
+    lines.append(f"- Source: `{RESULTS_PATH}`")
+    filter_parts = [f"`solver={args.solver}`"]
+    if args.eq:
+        filter_parts.append(f"`equilibrium={args.eq}`")
+    if args.order is not None:
+        filter_parts.append(f"`order={args.order}`")
+    filter_parts.append(f"`status in ({positive_status}, {negative_status})`")
+    lines.append("- Filters: " + ", ".join(filter_parts))
+    lines.append(f"- Rows in cohort: {total}")
+    lines.append(f"- `{positive_status}` rows: {tp + fn}")
+    lines.append(f"- `{negative_status}` rows: {tn + fp}")
+    lines.append("")
+    lines.append("## Model")
+    lines.append("")
+    lines.append(
+        f"- Rule learner: greedy binary tree over `params.*` only, max depth `{args.max_depth}`, "
+        f"minimum leaf `{args.min_leaf}`, minimum gain `{args.min_gain}`"
+    )
+    lines.append(f"- Baseline `{positive_status}` rate: {_format_float(base_rate)}")
+    lines.append(f"- Training accuracy: {_format_float(accuracy)}")
+    lines.append(f"- Training precision (`{positive_status}`): {_format_float(precision)}")
+    lines.append(f"- Training recall (`{positive_status}`): {_format_float(recall)}")
+    lines.append(
+        f"- Confusion matrix: TP={tp}, FP={fp}, TN={tn}, FN={fn}"
+    )
+    lines.append("")
+    lines.append("## Feature Coverage")
+    lines.append("")
+    lines.append("| feature | non-null rows | distinct values | values |")
+    lines.append("| --- | ---: | ---: | --- |")
+    for row in coverage_rows:
+        lines.append(
+            f"| {row['feature']} | {row['non_null']} | {row['distinct']} | {row['values']} |"
+        )
+    lines.append("")
+    lines.append("## Best Single-Split Rules")
+    lines.append("")
+    lines.append(
+        "| feature | threshold | gain | left rows | left "
+        + positive_status
+        + " rate | right rows | right "
+        + positive_status
+        + " rate |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for split in best_feature_splits[:8]:
+        left_rate = (
+            float(split["left_positive"]) / float(split["left_count"])
+            if split["left_count"]
+            else None
+        )
+        right_rate = (
+            float(split["right_positive"]) / float(split["right_count"])
+            if split["right_count"]
+            else None
+        )
+        lines.append(
+            f"| {split['feature']} | {float(split['threshold']):g} | {_format_float(float(split['gain']))} | "
+            f"{split['left_count']} | {_format_float(left_rate)} | "
+            f"{split['right_count']} | {_format_float(right_rate)} |"
+        )
+    lines.append("")
+    lines.append("## Learned Rule Tree")
+    lines.append("")
+    if split_rows:
+        lines.append(
+            "| depth | feature | threshold | gain | left rows | left "
+            + positive_status
+            + " rate | right rows | right "
+            + positive_status
+            + " rate |"
+        )
+        lines.append("| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for row in split_rows:
+            lines.append(
+                f"| {row['depth']} | {row['feature']} | {row['threshold']:g} | "
+                f"{_format_float(row['gain'])} | {row['left_samples']} | "
+                f"{_format_float(row['left_positive_rate'])} | {row['right_samples']} | "
+                f"{_format_float(row['right_positive_rate'])} |"
+            )
+    else:
+        lines.append("No split met the configured leaf/gain thresholds.")
+    lines.append("")
+    lines.append("## Leaf Rules")
+    lines.append("")
+    lines.append("| predicted | rule | rows | " + positive_status + " | " + negative_status + " | " + positive_status + " rate |")
+    lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
+    for row in leaf_rows:
+        lines.append(
+            f"| {row['prediction']} | {row['rule']} | {row['samples']} | "
+            f"{row['positive']} | {row['negative']} | {_format_float(row['positive_rate'])} |"
+        )
+    lines.append("")
+    lines.append("## Interpretation")
+    lines.append("")
+    lines.append(
+        f"- This model is descriptive, not causal. It summarizes the current `{args.solver}` search log as simple routing rules."
+    )
+    lines.append(
+        f"- Use the high-`{positive_status}` leaves as no-go regions and the low-`{positive_status}` leaves as candidate follow-up regions."
+    )
+    lines.append(
+        "- Because the learner uses only logged parameters, any threshold here should be treated as a search-policy heuristic rather than a physics law."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _dominates(candidate: sqlite3.Row, other: sqlite3.Row, metrics: Sequence[str]) -> bool:
+    """Return True if candidate weakly improves all metrics and strictly improves one."""
+    better_or_equal = True
+    strictly_better = False
+    for metric in metrics:
+        cv = candidate[metric]
+        ov = other[metric]
+        if cv is None or ov is None:
+            return False
+        if cv > ov:
+            better_or_equal = False
+            break
+        if cv < ov:
+            strictly_better = True
+    return better_or_equal and strictly_better
+
+
+def _pareto_frontier(rows: Sequence[sqlite3.Row], metrics: Sequence[str]) -> list[sqlite3.Row]:
+    frontier: list[sqlite3.Row] = []
+    for row in rows:
+        if any(_dominates(other, row, metrics) for other in rows if other is not row):
+            continue
+        frontier.append(row)
+    return frontier
+
+
+def _dedupe_rows(rows: Sequence[sqlite3.Row], fields: Sequence[str]) -> list[sqlite3.Row]:
+    unique: list[sqlite3.Row] = []
+    seen: set[tuple] = set()
+    for row in rows:
+        key = tuple(row[field] for field in fields)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def _pareto_where(args: argparse.Namespace) -> tuple[str, dict]:
+    w, p = _where(solver=args.solver, eq=args.eq, order=args.order, status="pass")
+    if args.scored_only:
+        w += " AND score IS NOT NULL"
+    w += (
+        " AND field_error IS NOT NULL"
+        " AND max_curvature IS NOT NULL"
+        " AND coil_length IS NOT NULL"
+    )
+    return w, p
+
+
+def build_pareto_markdown(args: argparse.Namespace) -> str:
+    db = _get_db()
+    w, p = _pareto_where(args)
+    rows = db.execute(
+        f"""
+        SELECT *
+        FROM runs
+        WHERE {w}
+        ORDER BY field_error ASC, max_curvature ASC, coil_length ASC
+        """,
+        p,
+    ).fetchall()
+    rows = _dedupe_rows(
+        rows,
+        (
+            "solver",
+            "equilibrium",
+            "score",
+            "field_error",
+            "max_curvature",
+            "coil_length",
+            "params_json",
+        ),
+    )
+    metrics = ("field_error", "max_curvature", "coil_length")
+    frontier = _pareto_frontier(rows, metrics)
+    frontier = sorted(
+        frontier,
+        key=lambda row: (
+            row["field_error"],
+            row["max_curvature"],
+            row["coil_length"],
+        ),
+    )
+    dominated = len(rows) - len(frontier)
+
+    lines: list[str] = []
+    lines.append("# Pareto Frontier")
+    lines.append("")
+    lines.append("## Cohort")
+    lines.append("")
+    lines.append(f"- Source: `{RESULTS_PATH}`")
+    scope_parts = []
+    if args.solver:
+        scope_parts.append(f"`solver={args.solver}`")
+    if args.eq:
+        scope_parts.append(f"`equilibrium={args.eq}`")
+    if args.order is not None:
+        scope_parts.append(f"`order={args.order}`")
+    if args.scored_only:
+        scope_parts.append("`score IS NOT NULL`")
+    scope_parts.append("`status=pass`")
+    scope_parts.append("`field_error IS NOT NULL`")
+    scope_parts.append("`max_curvature IS NOT NULL`")
+    scope_parts.append("`coil_length IS NOT NULL`")
+    lines.append("- Filters: " + ", ".join(scope_parts))
+    lines.append(f"- Candidate rows in cohort: {len(rows)}")
+    lines.append(f"- Pareto-optimal rows: {len(frontier)}")
+    lines.append(f"- Dominated rows removed: {dominated}")
+    lines.append("")
+    lines.append(
+        "Pareto objectives: minimize `field_error`, `max_curvature`, and `coil_length`."
+    )
+    lines.append("")
+    lines.append(
+        "| # | solver | equilibrium | score | field_error | max_curvature | coil_length | params |"
+    )
+    lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | --- |")
+    for idx, row in enumerate(frontier, 1):
+        params = _compact_params(_row_params(row))
+        lines.append(
+            f"| {idx} | {row['solver']} | {row['equilibrium'] or '?'} | "
+            f"{_format_float(row['score'])} | "
+            f"{_format_float(row['field_error'], 6)} | "
+            f"{_format_float(row['max_curvature'])} | "
+            f"{_format_float(row['coil_length'])} | {params} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def build_audit_markdown() -> str:
+    """Build a reproducible markdown audit of the live experiment log."""
+    db = _get_db()
+
+    total_rows = db.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    missing_score_rows = db.execute(
+        "SELECT COUNT(*) FROM runs WHERE score IS NULL"
+    ).fetchone()[0]
+    status_counts = _status_counts(db)
+    solver_counts = _solver_counts(db)
+    solver_rows = _solver_score_rows(db)
+    ct40_scope_rows = db.execute(
+        """
+        SELECT solver, status, COUNT(*) AS cnt
+        FROM runs
+        WHERE p_curvature_threshold = 40
+        GROUP BY solver, status
+        ORDER BY solver, status
+        """
+    ).fetchall()
+    single_stage_ct_rows = _ct_summary_rows(db, "single-stage")
+    field_error_x, field_error_y = _metric_pairs(db, "field_error")
+    max_curvature_x, max_curvature_y = _metric_pairs(db, "max_curvature")
+    field_error_rho = _spearman_correlation(field_error_x, field_error_y)
+    max_curvature_rho = _spearman_correlation(max_curvature_x, max_curvature_y)
+    equilibrium_rows = db.execute(
+        """
+        SELECT
+            equilibrium,
+            COUNT(*) AS pass_runs,
+            AVG(score) AS mean_pass_score,
+            MAX(score) AS best_score
+        FROM runs
+        WHERE solver='single-stage'
+          AND status='pass'
+          AND score IS NOT NULL
+          AND equilibrium IS NOT NULL
+        GROUP BY equilibrium
+        HAVING COUNT(*) >= 3
+        ORDER BY mean_pass_score DESC, best_score DESC
+        LIMIT 6
+        """
+    ).fetchall()
+    cw_rows = db.execute(
+        """
+        SELECT
+            p_curvature_weight AS curvature_weight,
+            COUNT(*) AS pass_runs,
+            AVG(score) AS mean_pass_score,
+            MAX(score) AS best_score
+        FROM runs
+        WHERE solver='single-stage'
+          AND status='pass'
+          AND score IS NOT NULL
+          AND p_curvature_weight IS NOT NULL
+        GROUP BY p_curvature_weight
+        HAVING COUNT(*) >= 1
+        ORDER BY p_curvature_weight
+        """
+    ).fetchall()
+
+    lines: list[str] = []
+    lines.append("# Results Audit")
+    lines.append("")
+    lines.append("## Dataset")
+    lines.append("")
+    lines.append(f"- Source: `{RESULTS_PATH}`")
+    lines.append(f"- Total rows: {total_rows}")
+    lines.append(f"- Missing `score` rows: {missing_score_rows}")
+    solver_parts = ", ".join(
+        f"`{solver}`={count}" for solver, count in sorted(solver_counts.items())
+    )
+    status_parts = ", ".join(
+        f"`{status}`={count}" for status, count in sorted(status_counts.items())
+    )
+    lines.append(f"- Solver counts: {solver_parts}")
+    lines.append(f"- Status counts: {status_parts}")
+    lines.append("")
+    lines.append("## Scored Solver Summary")
+    lines.append("")
+    lines.append(
+        "| solver | scored runs | pass runs | scored mean | pass-only mean | best score | >0.95 | >0.98 |"
+    )
+    lines.append(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    )
+    for row in solver_rows:
+        lines.append(
+            "| "
+            f"{row['solver']} | {row['scored_runs']} | {row['pass_runs']} | "
+            f"{_format_float(row['scored_mean_score'])} | "
+            f"{_format_float(row['pass_mean_score'])} | "
+            f"{_format_float(row['best_score'])} | "
+            f"{row['gt95_runs']} | {row['gt98_runs']} |"
+        )
+
+    lines.append("")
+    lines.append("## Curvature Threshold Scope Check")
+    lines.append("")
+    lines.append(
+        "These rows make the filter boundary explicit so CT=40 statistics do not mix "
+        "`single-stage` and `stage2` behavior."
+    )
+    lines.append("")
+    lines.append("| CT=40 scope | count |")
+    lines.append("| --- | ---: |")
+    for row in ct40_scope_rows:
+        lines.append(
+            f"| {row['solver']} / {row['status']} | {row['cnt']} |"
+        )
+
+    lines.append("")
+    lines.append("### Single-Stage CT Comparison")
+    lines.append("")
+    lines.append(
+        "| CT | total runs | pass | fail | crash | scored mean | pass-only mean | best score |"
+    )
+    lines.append(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    )
+    for row in single_stage_ct_rows:
+        lines.append(
+            f"| {int(row['ct'])} | {row['total_runs']} | {row['pass_runs']} | "
+            f"{row['fail_runs']} | {row['crash_runs']} | "
+            f"{_format_float(row['scored_mean_score'])} | "
+            f"{_format_float(row['pass_mean_score'])} | "
+            f"{_format_float(row['best_score'])} |"
+        )
+
+    lines.append("")
+    lines.append("## Metric Correlations")
+    lines.append("")
+    lines.append(
+        "- Spearman(`field_error`, `score`) on rows with both metrics: "
+        f"{_format_float(field_error_rho)} (n={len(field_error_x)})"
+    )
+    lines.append(
+        "- Spearman(`max_curvature`, `score`) on rows with both metrics: "
+        f"{_format_float(max_curvature_rho)} (n={len(max_curvature_x)})"
+    )
+    lines.append("")
+    lines.append(
+        "Negative values are expected here because lower field error / curvature "
+        "should correspond to higher score."
+    )
+
+    lines.append("")
+    lines.append("## Single-Stage Pass Sweet Spots")
+    lines.append("")
+    lines.append("### Equilibrium")
+    lines.append("")
+    lines.append("| equilibrium | pass runs | mean pass score | best score |")
+    lines.append("| --- | ---: | ---: | ---: |")
+    for row in equilibrium_rows:
+        lines.append(
+            f"| {row['equilibrium']} | {row['pass_runs']} | "
+            f"{_format_float(row['mean_pass_score'])} | "
+            f"{_format_float(row['best_score'])} |"
+        )
+
+    lines.append("")
+    lines.append("### Curvature Weight")
+    lines.append("")
+    lines.append("| curvature_weight | pass runs | mean pass score | best score |")
+    lines.append("| --- | ---: | ---: | ---: |")
+    for row in cw_rows:
+        lines.append(
+            f"| {row['curvature_weight']} | {row['pass_runs']} | "
+            f"{_format_float(row['mean_pass_score'])} | "
+            f"{_format_float(row['best_score'])} |"
+        )
+
+    lines.append("")
+    lines.append("## Recommendations")
+    lines.append("")
+    lines.append(
+        "- Treat `stage2` and `single-stage` as separate operating regimes in all future summaries."
+    )
+    lines.append(
+        "- Use pass-rate and pass-only score together; CT=40 looks attractive only inside an explicitly filtered `single-stage` slice."
+    )
+    lines.append(
+        "- Prioritize `single-stage` `curvature_weight` in the `0.1` to `0.2` band before broadening other knobs."
+    )
+
+    return "\n".join(lines) + "\n"
 
 
 # Canonical experiment key columns (for GROUP BY / dedup)
@@ -386,7 +1288,9 @@ def cmd_frontier(args: argparse.Namespace) -> None:
     """Show the Pareto frontier: best results across all dimensions."""
     db = _get_db()
     w, p = _where(solver=args.solver, eq=args.eq, order=args.order)
-    w += " AND status='pass' AND score > 0"
+    w, p = _apply_score_filters(w, p, args)
+    if not args.scored_only and not args.pass_only_scored:
+        w += " AND status='pass' AND score > 0"
     limit = args.top or 15
     p["lim"] = limit
 
@@ -429,6 +1333,7 @@ def cmd_history(args: argparse.Namespace) -> None:
     """What exact (seed, param) combos have been tried for a given equilibrium?"""
     db = _get_db()
     w, p = _where(solver=args.solver, eq=args.eq, order=args.order)
+    w, p = _apply_score_filters(w, p, args)
 
     rows = db.execute(
         f"""
@@ -489,6 +1394,7 @@ def cmd_nearby(args: argparse.Namespace) -> None:
     """What's been tried near a specific param value? Finds neighboring experiments."""
     db = _get_db()
     w, p = _where(solver=args.solver, eq=args.eq, order=args.order)
+    w, p = _apply_score_filters(w, p, args)
     rows = db.execute(f"SELECT * FROM runs WHERE {w}", p).fetchall()
 
     if not rows:
@@ -781,13 +1687,17 @@ def cmd_suggest(args: argparse.Namespace) -> None:
 def cmd_diff(args: argparse.Namespace) -> None:
     """Compare results between two equilibria."""
     db = _get_db()
+    _validate_score_filters(args)
 
     print(f"=== DIFF: {args.eq} vs {args.eq2} ===")
     print()
 
     for eq in [args.eq, args.eq2]:
+        eq_where = "equilibrium=:eq"
+        eq_params = {"eq": eq}
+        eq_where, eq_params = _apply_score_filters(eq_where, eq_params, args)
         row = db.execute(
-            """
+            f"""
             SELECT
                 SUM(status='pass') as passes,
                 SUM(status='fail') as fails,
@@ -796,9 +1706,9 @@ def cmd_diff(args: argparse.Namespace) -> None:
                 MAX(CASE WHEN status='pass' THEN score END) as max_score,
                 MIN(CASE WHEN status='pass' THEN field_error END) as min_fe,
                 MAX(CASE WHEN status='pass' THEN field_error END) as max_fe
-            FROM runs WHERE equilibrium=?
+            FROM runs WHERE {eq_where}
             """,
-            (eq,),
+            eq_params,
         ).fetchone()
         if not row or (row["passes"] or 0) + (row["fails"] or 0) + (row["crashes"] or 0) == 0:
             print(f"  {eq:10s}: no runs")
@@ -815,10 +1725,12 @@ def cmd_diff(args: argparse.Namespace) -> None:
     # Set operations on (order, CW, CT) combos
     combo_sql = (
         "SELECT p_order, p_curvature_weight, p_curvature_threshold"
-        " FROM runs WHERE equilibrium=?"
+        " FROM runs WHERE {where}"
     )
-    k1 = {tuple(r) for r in db.execute(combo_sql, (args.eq,))}
-    k2 = {tuple(r) for r in db.execute(combo_sql, (args.eq2,))}
+    where1, params1 = _apply_score_filters("equilibrium=:eq", {"eq": args.eq}, args)
+    where2, params2 = _apply_score_filters("equilibrium=:eq", {"eq": args.eq2}, args)
+    k1 = {tuple(r) for r in db.execute(combo_sql.format(where=where1), params1)}
+    k2 = {tuple(r) for r in db.execute(combo_sql.format(where=where2), params2)}
 
     only1 = k1 - k2
     only2 = k2 - k1
@@ -935,6 +1847,7 @@ def cmd_param_effect(args: argparse.Namespace) -> None:
     """How does a single parameter affect outcomes? Bucket analysis."""
     db = _get_db()
     w, p = _where(solver=args.solver, eq=args.eq)
+    w, p = _apply_score_filters(w, p, args)
     param = args.param
 
     col_map = {f: f"p_{f}" for f in _PARAM_FIELDS}
@@ -993,6 +1906,36 @@ def cmd_param_effect(args: argparse.Namespace) -> None:
             print(f"{range_str:>20s}  {n:>5d}  {pr:>5.0f}%  {avg:>10.4f}  {fe:>10s}")
 
 
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Emit a reproducible markdown audit of results.jsonl."""
+    markdown = build_audit_markdown()
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(markdown)
+    print(markdown, end="")
+
+
+def cmd_pareto(args: argparse.Namespace) -> None:
+    """Emit a physical Pareto frontier over field error, curvature, and coil length."""
+    markdown = build_pareto_markdown(args)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(markdown)
+    print(markdown, end="")
+
+
+def cmd_crash_model(args: argparse.Namespace) -> None:
+    """Emit an interpretable crash-vs-pass rule model over params only."""
+    markdown = build_crash_model_markdown(args)
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(markdown)
+    print(markdown, end="")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1021,12 +1964,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--eq", help="Filter by equilibrium")
     p.add_argument("--order", type=int, help="Filter by order")
     p.add_argument("--top", type=int, default=15, help="How many to show")
+    _add_score_filter_args(p)
 
     # --- history ---
     p = sub.add_parser("history", help="Full history for an equilibrium")
     p.add_argument("--eq", help="Equilibrium name (e.g., iota15)")
     p.add_argument("--solver", choices=["stage2", "single-stage"])
     p.add_argument("--order", type=int, help="Filter by order")
+    _add_score_filter_args(p)
 
     # --- nearby ---
     p = sub.add_parser("nearby", help="Find experiments near a param value")
@@ -1037,6 +1982,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ct", type=float, help="Curvature threshold to search near")
     p.add_argument("--ccw", type=float, help="CC weight to search near")
     p.add_argument("--top", type=int, default=20)
+    _add_score_filter_args(p)
 
     # --- crashes ---
     p = sub.add_parser("crashes", help="Analyze crash/fail patterns")
@@ -1051,6 +1997,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("diff", help="Compare two equilibria")
     p.add_argument("--eq", required=True, help="First equilibrium")
     p.add_argument("--eq2", required=True, help="Second equilibrium")
+    _add_score_filter_args(p)
 
     # --- param-effect ---
     p = sub.add_parser(
@@ -1062,12 +2009,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--eq", help="Filter by equilibrium")
     p.add_argument("--solver", choices=["stage2", "single-stage"])
+    _add_score_filter_args(p)
 
     # --- seeds ---
     p = sub.add_parser("seeds", help="List available Stage 2 seeds (filesystem scan)")
     p.add_argument("--eq", help="Filter by equilibrium name (substring match)")
     p.add_argument("--order", type=int, help="Filter by Fourier order")
     p.add_argument("--best", action="store_true", help="Show only the single lowest-FE seed")
+
+    # --- audit ---
+    p = sub.add_parser("audit", help="Generate a reproducible markdown results audit")
+    p.add_argument("--out", help="Optional path to also write the markdown report")
+
+    # --- pareto ---
+    p = sub.add_parser("pareto", help="Generate a Pareto frontier markdown table")
+    p.add_argument("--solver", choices=["stage2", "single-stage"])
+    p.add_argument("--eq", help="Filter by equilibrium")
+    p.add_argument("--order", type=int, help="Filter by order")
+    p.add_argument(
+        "--scored-only",
+        action="store_true",
+        help="Restrict to rows with non-null score in addition to physical metrics.",
+    )
+    p.add_argument("--out", help="Optional path to also write the markdown report")
+
+    # --- crash-model ---
+    p = sub.add_parser(
+        "crash-model",
+        help="Generate an interpretable params-only crash/pass rule model",
+    )
+    p.add_argument(
+        "--solver",
+        choices=["stage2", "single-stage"],
+        default="single-stage",
+        help="Solver regime to model (default: single-stage)",
+    )
+    p.add_argument("--eq", help="Filter by equilibrium")
+    p.add_argument("--order", type=int, help="Filter by order")
+    p.add_argument(
+        "--target-status",
+        choices=["crash", "pass"],
+        default="crash",
+        help="Positive class to model against the other single-stage outcome",
+    )
+    p.add_argument("--max-depth", type=int, default=3, help="Maximum tree depth")
+    p.add_argument("--min-leaf", type=int, default=12, help="Minimum rows per leaf")
+    p.add_argument(
+        "--min-gain",
+        type=float,
+        default=0.01,
+        help="Minimum impurity gain required to keep a split",
+    )
+    p.add_argument("--out", help="Optional path to also write the markdown report")
 
     # --- sql ---
     p = sub.add_parser("sql", help="Run arbitrary SELECT on the runs table")
@@ -1094,6 +2087,9 @@ def main() -> None:
         "diff": cmd_diff,
         "param-effect": cmd_param_effect,
         "seeds": cmd_seeds,
+        "audit": cmd_audit,
+        "pareto": cmd_pareto,
+        "crash-model": cmd_crash_model,
         "sql": cmd_sql,
         "schema": cmd_schema,
     }
