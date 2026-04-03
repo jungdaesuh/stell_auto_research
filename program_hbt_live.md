@@ -25,18 +25,18 @@ The frozen solver (`candidate-fixed`) optimizes one Boozer surface. The live sol
 ```bash
 # Single-surface on live solver (baseline comparison)
 python scripts/run_one.py --solver-root /Users/suhjungdae/code/columbia/simsopt \
-  --solver single-stage --equilibrium iota15 --iota-target 0.15 --timeout 1800
+  --solver single-stage --equilibrium nfp5_iota15 --iota-target 0.15 --timeout 1800
 
 # Multi-surface with topology gating
 python scripts/run_one.py --solver-root /Users/suhjungdae/code/columbia/simsopt \
-  --solver single-stage --equilibrium iota17 --iota-target 0.17 --timeout 3600 \
+  --solver single-stage --equilibrium nfp5_iota17 --iota-target 0.17 --timeout 3600 \
   --num-surfaces 2 --inner-surface-ratio 0.8 \
   --topology-gate-fieldlines 4 --topology-gate-survival-threshold 0.25 \
   --multisurface-ramp-iterations 5
 
 # Stage 2 seed generation (same as frozen)
 python scripts/run_one.py --solver-root /Users/suhjungdae/code/columbia/simsopt \
-  --solver stage2 --equilibrium iota17
+  --solver stage2 --equilibrium nfp5_iota17
 ```
 
 Unknown args (like `--num-surfaces`, `--topology-gate-*`) are forwarded directly to the solver.
@@ -69,7 +69,7 @@ The multi-surface optimizer attacks this by:
 2. **Inner surface ratio**: 0.8 vs 0.6 vs 0.9 — does the inner surface position matter?
 3. **Ramp iterations**: 5 vs 10 vs 20 — does a longer continuation phase help?
 4. **RES_WEIGHT**: 1000 vs 10000 — does stronger Boozer residual improve topology?
-5. **Different equilibria**: iota17 vs iota15 vs iota20 — does the topology gap depend on equilibrium?
+5. **Different equilibria**: Vary NFP (5/10/15) and iota (0.10–0.50) — does the topology gap depend on equilibrium?
 6. **Single vs multi-surface baseline**: For the same seed/equilibrium, does `--num-surfaces 2` improve Poincaré survival over `--num-surfaces 1`?
 
 ## Scoring

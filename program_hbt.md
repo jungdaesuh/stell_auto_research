@@ -39,15 +39,9 @@ J = NonQSRatio
 
 ## Equilibria
 
-19 equilibrium files available. Match `--iota-target` to the equilibrium axis iota.
+126 equilibrium files available across NFP=5/10/15, iota=0.10–0.50. Use `--equilibrium nfp{N}_iota{XX}` format (e.g., `nfp5_iota17`, `nfp10_iota25`).
 
-| Shorthand | Axis iota | Notes |
-|-----------|-----------|-------|
-| `iota15` | 0.1466 | VMEC, has seeds |
-| `iota20` | 0.1980 | VMEC, has seeds |
-| `iota15p`, `iota20p` | 0.15, 0.20 | DESC precise variants |
-| `iota16`-`iota30` | 0.16-0.30 | DESC, most underexplored |
-| `001490` | 0.2973 | VMEC, single-stage untested |
+Legacy NFP=5 aliases `iota15`–`iota30` still work. Match `--iota-target` to the equilibrium key.
 
 ## Running an Experiment
 
@@ -55,9 +49,9 @@ J = NonQSRatio
 
 ```bash
 python scripts/run_one.py --cc-weight 100 --curvature-threshold 40           # Stage 2 default
-python scripts/run_one.py --equilibrium iota20 --cc-weight 50                # Stage 2 iota20
-python scripts/run_one.py --solver single-stage --equilibrium iota15 \
-  --iota-target 0.15 --vol-target 0.10 --mpol 8 --timeout 1200              # Single-stage
+python scripts/run_one.py --equilibrium nfp5_iota20 --cc-weight 50           # Stage 2 NFP=5 iota20
+python scripts/run_one.py --solver single-stage --equilibrium nfp10_iota25 \
+  --iota-target 0.25 --vol-target 0.10 --mpol 8 --timeout 1200              # Single-stage NFP=10
 ```
 
 Output: one JSON line to stdout, auto-appended to `results.jsonl`. On crash: `run_dir` path + last 30 lines of solver log preserved.

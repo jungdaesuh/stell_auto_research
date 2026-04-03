@@ -33,14 +33,20 @@ for i in "$@"; do
     prev="$i"
 done
 
-# Map equilibrium shorthand to wout filename
-declare -A EQ_MAP=(
-    ["iota15"]="wout_nfp22ginsburg_000_014417_iota15.nc"
-    ["iota16"]="wout_nfp22ginsburg_desc_iota16.nc"
-    ["iota17"]="wout_nfp22ginsburg_desc_iota17.nc"
-    ["iota20"]="wout_nfp22ginsburg_000_002084_iota20.nc"
-)
-PLASMA_SURF="${EQ_MAP[$EQUILIBRIUM]:-$EQUILIBRIUM}"
+# Map equilibrium shorthand — supports nfp{N}_iota{XX} format
+if [[ "$EQUILIBRIUM" =~ ^nfp([0-9]+)_iota([0-9]+)$ ]]; then
+    _NFP="${BASH_REMATCH[1]}"
+    _IOTA="${BASH_REMATCH[2]}"
+    PLASMA_SURF="wout_nfp${_NFP}ginsburg_desc_iota${_IOTA}.nc"
+else
+    declare -A EQ_MAP=(
+        ["iota15"]="wout_nfp5ginsburg_000_014417_iota15.nc"
+        ["iota16"]="wout_nfp5ginsburg_desc_iota16.nc"
+        ["iota17"]="wout_nfp5ginsburg_desc_iota17.nc"
+        ["iota20"]="wout_nfp5ginsburg_000_002084_iota20.nc"
+    )
+    PLASMA_SURF="${EQ_MAP[$EQUILIBRIUM]:-$EQUILIBRIUM}"
+fi
 
 # Find best matching seed on the remote instance
 echo "Finding seed on remote..."

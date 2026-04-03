@@ -45,7 +45,7 @@ INITIAL_SEED=${RAMP_INITIAL_SEED:-~/seed_mpol18/biot_savart_opt.json}
 
 # Common params (from best single-stage config)
 COMMON_ARGS=(
-    --plasma-surf-filename ${RAMP_PLASMA_SURF:-wout_nfp22ginsburg_000_014417_iota15.nc}
+    --plasma-surf-filename ${RAMP_PLASMA_SURF:-wout_nfp5ginsburg_000_014417_iota15.nc}
     --equilibria-dir ~/equilibria
     --iota-target ${RAMP_IOTA_TARGET:-0.15}
     --vol-target ${RAMP_VOL_TARGET:-0.10}

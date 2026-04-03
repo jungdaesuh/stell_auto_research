@@ -28,11 +28,11 @@ Stage 2 (~30s, weighted-sum, unchanged) → Single-stage with ALM (~20-60min). A
 **Always use `scripts/run_one.py`. Never call the solver directly.**
 
 ```bash
-python scripts/run_one.py --solver single-stage --equilibrium iota15 \
+python scripts/run_one.py --solver single-stage --equilibrium nfp5_iota15 \
   --iota-target 0.15 --vol-target 0.10 --mpol 8 \
   --alm --alm-outer-iters 10 --timeout 3600
 
-python scripts/run_one.py --solver stage2 --equilibrium iota15    # seed generation
+python scripts/run_one.py --solver stage2 --equilibrium nfp5_iota15  # seed generation
 ```
 
 Seeds auto-resolved. `--timeout 3600` auto-set for ALM. ALM and `--basin-hops` are mutually exclusive.
@@ -71,7 +71,7 @@ lab.py sql "SELECT * FROM runs WHERE p_alm = 1"     Filter ALM runs
 
 ## What to Explore
 
-1. **Equilibrium selection** — which of 19 equilibria work best with ALM?
+1. **Equilibrium selection** — which equilibria work best with ALM? (126 available: NFP=5/10/15, iota=0.10–0.50)
 2. **Seed quality** — different seeds → different basins
 3. **ALM hyperparameters** — mu_init, mu_increase, outer_iters
 4. **Physics weights** — res_weight, iotas_weight

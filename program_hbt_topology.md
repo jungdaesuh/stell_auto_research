@@ -11,7 +11,7 @@ You are an autonomous researcher optimizing HBT stellarator configurations with 
 3. **Pre-flight checks** (run before first optimization):
    - Verify solver is registered: `python scripts/run_one.py --solver-root /Users/suhjungdae/code/columbia/simsopt --solver-python /opt/homebrew/Caskroom/miniforge/base/envs/columbia-jax-0.9.2/bin/python --register`
    - Verify SurfaceClassifier fix is present: `grep -c '_full_torus_surface' /Users/suhjungdae/code/columbia/simsopt/examples/single_stage_optimization/topology_scorer.py` (must return >= 1)
-   - Verify equilibria exist: `ls /Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA/wout_nfp22ginsburg_*.nc | wc -l` (must return 19)
+   - Verify equilibria exist: `ls /Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA/wout_nfp*ginsburg_*.nc | wc -l` (must return 126 — 3 NFP values × 41 iota values + 3 legacy VMEC seeds)
 4. **Read prior art**: `results.jsonl` contains 850+ runs. Query with `lab.py`.
 5. **Start the loop.**
 
@@ -24,10 +24,12 @@ python scripts/run_one.py \
   --solver single-stage \
   --solver-root /Users/suhjungdae/code/columbia/simsopt \
   --equilibrium <eq> \
-  --iota-target <iota> --vol-target 0.10 \
+  --iota-target <iota> --vol-target <vol> \
   --mpol <mpol> --ntor <ntor> \
   --curvature-threshold 40 \
-  --curvature-weight 0.1 \
+  --curvature-weight <cw> \
+  --cc-weight <ccw> --cc-dist <ccd> \
+  --res-weight <rw> --iotas-weight <iw> \
   --checkpoint-every 10 \
   --topology-scorer-every 10 \
   --ftol 1e-15 --gtol 1e-15 \
@@ -48,10 +50,12 @@ python scripts/run_one.py \
   --solver-root /Users/suhjungdae/code/columbia/simsopt \
   --stage2-bs-path <path-to-biot_savart_opt.json> \
   --equilibrium <eq> \
-  --iota-target <iota> --vol-target 0.10 \
+  --iota-target <iota> --vol-target <vol> \
   --mpol <mpol> --ntor <ntor> \
   --curvature-threshold 40 \
-  --curvature-weight 0.1 \
+  --curvature-weight <cw> \
+  --cc-weight <ccw> --cc-dist <ccd> \
+  --res-weight <rw> --iotas-weight <iw> \
   --checkpoint-every 10 \
   --topology-scorer-every 10 \
   --ftol 1e-15 --gtol 1e-15 \
@@ -84,7 +88,7 @@ From the RES_WEIGHT pilot, Poincare batch (2026-03-29), and topology session (20
 
 - **Scalar metrics do not predict confinement.** The best nonqs_ratio (0.000321) failed Poincare at 73% survival. A worse nonqs_ratio (0.000425) passed at 80%.
 - **RES_WEIGHT doesn't control confinement.** 1000 vs 5000 produced identical 66% survival despite different scalar metrics.
-- **Iota family matters.** iota17 and iota20 both pass strict Poincare (29/30, 97% at tmax=5000). iota15 is weaker.
+- **Iota family matters.** nfp5_iota17 and nfp5_iota20 both pass strict Poincare (29/30, 97% at tmax=5000). nfp5_iota15 is weaker.
 - **mpol matters.** Higher mpol = more Fourier modes = better boundary shaping. mpol=16 needed for Poincare confinement, though mpol=12 is often sufficient for the optimizer.
 - **ntor matters and is underexplored.** ntor=8 with mpol=9 achieved J=0.000287 with 12/12 confinement — the best result from the 2026-03-31 session. ntor exploration (never tried in 850+ runs) proved more effective than weight tuning.
 - **SurfaceClassifier fix is prerequisite.** The Columbia solver's topology_scorer.py must use `_full_torus_surface()` to create a full-torus surface before passing to SurfaceClassifier. Without this fix, all topology scores falsely read 0/12 survival. Fix is at columbia/simsopt commit 28ea688822c0.
@@ -123,49 +127,77 @@ High mpol or ntor runs crash if jumped to directly. Use single-step increments:
 
 ## Equilibria
 
-19 equilibrium files available. Match `--iota-target` to the equilibrium axis iota. `run_one.py` warns if `--iota-target` deviates by more than 0.02 from the expected axis iota.
+126 equilibrium files available across 3 NFP values (banana coils have 5-fold symmetry: NFP=5/10/15 = 1x/2x/3x field periods per coil section).
 
-| Shorthand | Axis iota | `--iota-target` | Source | Notes |
-|-----------|-----------|-----------------|--------|-------|
-| `iota15` | 0.1466 | 0.15 | VMEC | Most explored |
-| `iota15p` | 0.15 | 0.15 | DESC | Precise variant |
-| `iota16` | 0.16 | 0.16 | DESC | Underexplored |
-| `iota17` | 0.1697 | 0.17 | DESC | Passes strict Poincare (29/30 at tmax=5000) |
-| `iota18` | 0.18 | 0.18 | DESC | Underexplored |
-| `iota19` | 0.19 | 0.19 | DESC | Underexplored |
-| `iota20` | 0.1980 | 0.20 | VMEC | Passes strict Poincare (29/30 at tmax=5000) |
-| `iota20p` | 0.20 | 0.20 | DESC | Precise variant |
-| `iota21` | 0.21 | 0.21 | DESC | Underexplored |
-| `iota22` | 0.22 | 0.22 | DESC | Underexplored |
-| `iota23` | 0.23 | 0.23 | DESC | Underexplored |
-| `iota24` | 0.24 | 0.24 | DESC | Underexplored |
-| `iota25` | 0.25 | 0.25 | DESC | Underexplored |
-| `iota26` | 0.26 | 0.26 | DESC | Underexplored |
-| `iota27` | 0.27 | 0.27 | DESC | Underexplored |
-| `iota28` | 0.28 | 0.28 | DESC | Underexplored |
-| `iota29` | 0.29 | 0.29 | DESC | Underexplored |
-| `iota30` | 0.30 | 0.30 | DESC | Underexplored |
-| `001490` | 0.2973 | 0.30 | VMEC | Single-stage untested |
+### Equilibrium naming convention
 
-**Do not assume which equilibrium is best.** iota17 and iota20 are the only confirmed Poincare passers, but 15 equilibria are underexplored.
+Use `--equilibrium nfp{N}_iota{XX}` where N is the field period count and XX is the iota target × 100.
+
+| NFP | Iota range | Example key | `--iota-target` | Count |
+|-----|-----------|-------------|-----------------|-------|
+| 5 | 0.10–0.50 | `nfp5_iota17` | 0.17 | 41 |
+| 10 | 0.10–0.50 | `nfp10_iota25` | 0.25 | 41 |
+| 15 | 0.10–0.50 | `nfp15_iota30` | 0.30 | 41 |
+
+Legacy NFP=5 aliases still work: `iota15`–`iota30`, `iota15p`, `iota20p`, `001490`.
+
+All DESC-generated equilibria have flat iota profiles. Match `--iota-target` to the key (e.g., `nfp5_iota17` → `--iota-target 0.17`).
+
+### Prior results (NFP=5 only)
+
+Only NFP=5 has been explored so far. Key findings:
+- `nfp5_iota17` and `nfp5_iota20` pass strict Poincare (29/30 at tmax=5000)
+- NFP=10 and NFP=15 are entirely unexplored — high priority for discovery
+
+**Do not assume which equilibrium is best.** Explore across NFP values and iota targets broadly.
 
 ## Key Parameters
 
-**Always set:**
+**Always set (do not change):**
 - `--solver-root /Users/suhjungdae/code/columbia/simsopt`
 - `--checkpoint-every 10`
 - `--topology-scorer-every 10`
-- `--curvature-threshold 40`
-- `--curvature-weight 0.1` (Columbia solver default; run_one.py default is 0.0001 which is 1000x too low)
 - `--ftol 1e-15 --gtol 1e-15` (when using optimized seeds)
-- `--timeout 3600` (increase to 7200 for mpol >= 12 with topology scoring; each topology call adds ~30s)
+- `--timeout 3600` (increase to 7200 for mpol >= 12 with topology scoring)
 
-**Tune:**
+**Explore — resolution:**
 - `--mpol` — start at 8 for new equilibria. Ramp progressively (see Progressive Ramp Rules).
-- `--ntor` — start at 6. Ramp to 8, 10. ntor=8 showed strong results.
-- `--res-weight` — default 1000. Does not affect confinement. Keep at 1000.
-- `--iotas-weight` — default 100. Try 200.
-- Other objective weights — adjust when topology-validated lane is already strong and needs local refinement.
+- `--ntor` — start at 6. Ramp to 8, 10, 12. ntor=8 showed strong results.
+
+**Explore — equilibrium & plasma targets:**
+- `--equilibrium` — NFP=5/10/15, iota=0.10–0.50. Use `nfp{N}_iota{XX}` format.
+- `--iota-target` — must match equilibrium key (e.g. `nfp5_iota17` → `0.17`).
+- `--vol-target` — plasma volume target. Default 0.10. Explore 0.05–0.20. DATABASE runs tested up to 1.75.
+
+**Explore — objective weights (banana coil metrics):**
+These control the optimization trade-offs. All are scannable.
+
+| Metric | Weight param | Threshold/target param | Default weight | Default threshold |
+|--------|-------------|----------------------|----------------|-------------------|
+| Boozer residual | `--res-weight` | — | 1000 | — |
+| Iota penalty | `--iotas-weight` | `--iota-target` | 100 | 0.15 |
+| Coil length | `--length-weight` | `--length-target` | 1 | 1.75 |
+| Max curvature | `--curvature-weight` | `--curvature-threshold` | 0.1 | 40 |
+| Coil-coil distance | `--cc-weight` | `--cc-dist` | 100 | 0.05 |
+| Coil-plasma distance | `--cs-weight` | `--cs-dist` | 1 | 0.02 |
+| Plasma-vessel distance | `--surf-dist-weight` | `--ss-dist` | 1000 | 0.04 |
+
+**Explore — solver settings:**
+
+| Param | Default | What it does |
+|-------|---------|-------------|
+| `--banana-surf-radius` | 0.22 | Banana coil surface radius |
+| `--maxiter` | 400 | Max L-BFGS-B iterations |
+| `--maxcor` | 300 | L-BFGS-B memory (number of corrections) |
+| `--boozer-stage` | initial | LS residual (initial) vs exact (final) |
+| `--constraint-weight` | 1.0 | Boozer constraint weight (-1 = exact Newton) |
+| `--num-tf-coils` | 20 | Number of TF coils |
+
+Notes:
+- `--res-weight 1000` confirmed not to affect confinement (pilot study). Start there but free to explore.
+- `--curvature-threshold` must stay ≤ 40 (HBT fabrication constraint). The weight is tunable.
+- QA/QS error (NonQSRatio) is always in the objective with weight 1. Not separately tunable.
+- Eps_eff and max force on coils are post-hoc metrics, not direct optimization parameters.
 
 ## Evaluation — Three Tiers
 
@@ -240,7 +272,7 @@ Only run Tier 3 on the best topology results from Tier 2.
 See `AUTORESEARCH_TOPOLOGY_SELECTION_POLICY.md` for the full policy. Summary:
 
 **Definitions:**
-- **Family**: An equilibrium file (e.g. iota17). Candidates within the same family share the same equilibrium and are comparable. Candidates across families are compared only when both have strict Poincare results.
+- **Family**: An equilibrium file (e.g. nfp5_iota17). Candidates within the same family share the same equilibrium and are comparable. Candidates across families are compared only when both have strict Poincare results.
 - **Materially competitive**: Strict Poincare survival within 2 field lines of the family baseline (e.g. 48/50 vs 50/50). A candidate at 40/50 against a baseline of 50/50 is not competitive.
 - **Medium scorer**: In-run topology scoring at nfieldlines=12, tmax=50. Used for shortlisting within a run. Not directly comparable to strict Poincare (nfieldlines=50, tmax=7000).
 - **Directionally consistent**: Medium and strict scores agree on relative ordering. If medium says checkpoint A > B, strict should also show A >= B.
@@ -279,7 +311,7 @@ Phase 1 — Validate the pipeline:
 
 Phase 2 — Explore and analyze:
 2. Query `lab.py` to understand the full landscape.
-3. Form hypothesis. Recommended exploration order: equilibrium family → mpol → ntor.
+3. Form hypothesis. Recommended exploration order: NFP → equilibrium family (iota) → mpol → ntor.
 4. Run experiments. Use progressive ramp for high-resolution runs.
 5. Do not spend primary budget on weight tuning unless a topology-validated lane is already strong.
 
@@ -317,7 +349,7 @@ These are operational minimums for this workflow (stricter than the solver's int
 - **The selection unit is the best checkpoint, not the final iterate.** Always rank checkpoints first, then rank runs.
 - **Crashes carry information.** High RES_WEIGHT (>=3000) crashes the solver. Stay at 1000.
 - **mpol and ntor are the levers.** Higher resolution = better boundary shaping = better confinement. ntor is underexplored.
-- **Equilibrium matters.** Different iota targets produce structurally different confinement. Explore broadly.
+- **Equilibrium matters.** Different iota targets produce structurally different confinement. Explore broadly across all three NFP values (5, 10, 15) and the full iota range (0.10–0.50).
 - **Progressive ramp, not big jumps.** Single-step increments in mpol and ntor prevent Boozer initialization crashes.
 
 **NEVER STOP.** Follow the phase plan. If stuck, move to the next phase. Keep going until the human interrupts you.

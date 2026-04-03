@@ -427,27 +427,23 @@ def cmd_batch(args: list[str]) -> None:
 
 _JSONL_THREAD_LOCK = __import__("threading").Lock()
 
-EQ_MAP = {
-    "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
-    "iota15p": "wout_nfp22ginsburg_desc_iota15.nc",
-    "iota16": "wout_nfp22ginsburg_desc_iota16.nc",
-    "iota17": "wout_nfp22ginsburg_desc_iota17.nc",
-    "iota18": "wout_nfp22ginsburg_desc_iota18.nc",
-    "iota19": "wout_nfp22ginsburg_desc_iota19.nc",
-    "iota20": "wout_nfp22ginsburg_000_002084_iota20.nc",
-    "iota20p": "wout_nfp22ginsburg_desc_iota20.nc",
-    "iota21": "wout_nfp22ginsburg_desc_iota21.nc",
-    "iota22": "wout_nfp22ginsburg_desc_iota22.nc",
-    "iota23": "wout_nfp22ginsburg_desc_iota23.nc",
-    "iota24": "wout_nfp22ginsburg_desc_iota24.nc",
-    "iota25": "wout_nfp22ginsburg_desc_iota25.nc",
-    "iota26": "wout_nfp22ginsburg_desc_iota26.nc",
-    "iota27": "wout_nfp22ginsburg_desc_iota27.nc",
-    "iota28": "wout_nfp22ginsburg_desc_iota28.nc",
-    "iota29": "wout_nfp22ginsburg_desc_iota29.nc",
-    "iota30": "wout_nfp22ginsburg_desc_iota30.nc",
-    "001490": "wout_nfp22ginsburg_000_001490.nc",
-}
+# Equilibrium registry: nfp{N}_iota{XX} -> wout filename
+EQ_MAP = {}
+for _nfp in (5, 10, 15):
+    for _iota_int in range(10, 51):
+        EQ_MAP[f"nfp{_nfp}_iota{_iota_int}"] = (
+            f"wout_nfp{_nfp}ginsburg_desc_iota{_iota_int:02d}.nc"
+        )
+# Legacy aliases (NFP=5)
+EQ_MAP.update({
+    "iota15": "wout_nfp5ginsburg_000_014417_iota15.nc",
+    "iota15p": "wout_nfp5ginsburg_desc_iota15.nc",
+    "iota20": "wout_nfp5ginsburg_000_002084_iota20.nc",
+    "iota20p": "wout_nfp5ginsburg_desc_iota20.nc",
+    "001490": "wout_nfp5ginsburg_000_001490.nc",
+})
+for _i in range(15, 31):
+    EQ_MAP.setdefault(f"iota{_i}", EQ_MAP[f"nfp5_iota{_i}"])
 
 # Args consumed by _run_remote, not forwarded to the solver
 _META_ARGS = {"--solver", "--equilibrium", "--timeout"}
@@ -559,7 +555,13 @@ def _parse_and_sanitize(extra_args: str) -> tuple[str, str, str, int, str]:
                 f"Unsafe argument rejected (shell metacharacter): {part!r}"
             )
 
-    plasma_surf = EQ_MAP.get(equilibrium, equilibrium)
+    plasma_surf = EQ_MAP.get(equilibrium)
+    if plasma_surf is None:
+        raise ValueError(
+            f"Unknown equilibrium '{equilibrium}'. "
+            f"Use nfp{{N}}_iota{{XX}} (e.g. nfp5_iota17, nfp10_iota25) "
+            f"or a legacy alias (iota15–iota30)."
+        )
     ssh_timeout = (
         timeout_val + 120
         if timeout_val > 0

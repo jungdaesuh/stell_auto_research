@@ -138,30 +138,39 @@ def _resolve_solver(args) -> tuple[list[str], Path, dict]:
 
     return cmd_prefix, solver_script, _get_git_metadata(solver_root)
 
-EQUILIBRIUM_FILES = {
-    "iota15": "wout_nfp22ginsburg_000_014417_iota15.nc",
-    "iota15p": "wout_nfp22ginsburg_desc_iota15.nc",
-    "iota16": "wout_nfp22ginsburg_desc_iota16.nc",
-    "iota17": "wout_nfp22ginsburg_desc_iota17.nc",
-    "iota18": "wout_nfp22ginsburg_desc_iota18.nc",
-    "iota19": "wout_nfp22ginsburg_desc_iota19.nc",
-    "iota20": "wout_nfp22ginsburg_000_002084_iota20.nc",
-    "iota20p": "wout_nfp22ginsburg_desc_iota20.nc",
-    "iota21": "wout_nfp22ginsburg_desc_iota21.nc",
-    "iota22": "wout_nfp22ginsburg_desc_iota22.nc",
-    "iota23": "wout_nfp22ginsburg_desc_iota23.nc",
-    "iota24": "wout_nfp22ginsburg_desc_iota24.nc",
-    "iota25": "wout_nfp22ginsburg_desc_iota25.nc",
-    "iota26": "wout_nfp22ginsburg_desc_iota26.nc",
-    "iota27": "wout_nfp22ginsburg_desc_iota27.nc",
-    "iota28": "wout_nfp22ginsburg_desc_iota28.nc",
-    "iota29": "wout_nfp22ginsburg_desc_iota29.nc",
-    "iota30": "wout_nfp22ginsburg_desc_iota30.nc",
-    "001490": "wout_nfp22ginsburg_000_001490.nc",
-}
+# ---------------------------------------------------------------------------
+# Equilibrium registry: nfp{N}_iota{XX} -> wout filename
+# NFP = 5, 10, 15 (banana coils have 5-fold symmetry: 1x, 2x, 3x periods)
+# iota = 0.10 to 0.50 in steps of 0.01
+# ---------------------------------------------------------------------------
+EQUILIBRIUM_FILES = {}
+EQUILIBRIUM_AXIS_IOTA = {}
 
-# Axis iota for each equilibrium — used to validate --iota-target matches.
-EQUILIBRIUM_AXIS_IOTA = {
+for _nfp in (5, 10, 15):
+    for _iota_int in range(10, 51):
+        _key = f"nfp{_nfp}_iota{_iota_int}"
+        EQUILIBRIUM_FILES[_key] = f"wout_nfp{_nfp}ginsburg_desc_iota{_iota_int:02d}.nc"
+        EQUILIBRIUM_AXIS_IOTA[_key] = _iota_int / 100.0
+
+# Legacy aliases (NFP=5 only) — backward compatible with old runs.
+# "iota15" and "iota20" point to the original VMEC seeds (non-flat iota
+# profiles, slightly different axis iota). Use "nfp5_iota15" or "iota15p"
+# for the DESC flat-iota versions.
+EQUILIBRIUM_FILES.update({
+    "iota15": "wout_nfp5ginsburg_000_014417_iota15.nc",   # VMEC original
+    "iota15p": "wout_nfp5ginsburg_desc_iota15.nc",        # DESC flat-iota
+    "iota20": "wout_nfp5ginsburg_000_002084_iota20.nc",   # VMEC original
+    "iota20p": "wout_nfp5ginsburg_desc_iota20.nc",        # DESC flat-iota
+    "001490": "wout_nfp5ginsburg_000_001490.nc",           # VMEC original
+})
+for _i in range(15, 31):
+    _legacy = f"iota{_i}"
+    if _legacy not in EQUILIBRIUM_FILES:
+        EQUILIBRIUM_FILES[_legacy] = EQUILIBRIUM_FILES[f"nfp5_iota{_i}"]
+# Measured axis iota from VMEC originals and DESC equilibria.
+# VMEC seeds have non-flat iota profiles, so axis iota != target.
+# DESC seeds have flat profiles, so axis iota == target exactly.
+EQUILIBRIUM_AXIS_IOTA.update({
     "iota15": 0.1466, "iota15p": 0.15,
     "iota16": 0.16, "iota17": 0.1697, "iota18": 0.18, "iota19": 0.19,
     "iota20": 0.1980, "iota20p": 0.20,
@@ -169,11 +178,15 @@ EQUILIBRIUM_AXIS_IOTA = {
     "iota25": 0.25, "iota26": 0.26, "iota27": 0.27, "iota28": 0.28,
     "iota29": 0.29, "iota30": 0.30,
     "001490": 0.2973,
-}
+})
 
 
 def score_stage2(metrics: dict, args: argparse.Namespace) -> float:
-    """Stage 2 scoring: field error + curvature excess + SI penalty."""
+    """Stage 2 scoring: field error + curvature excess + SI penalty.
+
+    NOTE: Not comparable with score_single_stage — different penalty terms.
+    stage2 omits iota/volume miss, so identical physics gives a higher stage2 score.
+    """
     fe = metrics.get("FIELD_ERROR")
     if fe is None or (isinstance(fe, float) and math.isnan(fe)):
         return 0.0
@@ -188,7 +201,12 @@ def score_stage2(metrics: dict, args: argparse.Namespace) -> float:
 
 
 def score_single_stage(metrics: dict, args: argparse.Namespace) -> float:
-    """Single-stage scoring: field error + iota/volume miss + Boozer + curvature + SI."""
+    """Single-stage scoring: field error + iota/volume miss + curvature + SI.
+
+    NOTE: Not comparable with score_stage2 — includes iota/volume miss penalties
+    that stage2 does not have, so single-stage scores are systematically lower
+    for identical underlying physics.
+    """
     fe = metrics.get("FIELD_ERROR")
     if fe is None or (isinstance(fe, float) and math.isnan(fe)):
         return 0.0
@@ -220,6 +238,31 @@ def score_single_stage(metrics: dict, args: argparse.Namespace) -> float:
         penalty += 5.0
 
     return 1.0 / (1.0 + penalty)
+
+
+def _required_metric_names(solver: str) -> list[str]:
+    """Return the minimal metrics required to treat a completed run as valid."""
+    required = ["FIELD_ERROR", "MAX_CURVATURE"]
+    if solver == "single-stage":
+        required.extend(["FINAL_IOTA", "FINAL_VOLUME"])
+    return required
+
+
+def _classify_completed_run(metrics: dict, solver: str, score: float) -> tuple[str, str, list[str]]:
+    """Classify a completed solver run into pass/fail with a machine-readable reason.
+
+    Returns (status, status_reason, missing_metrics).
+    """
+    missing_metrics = [name for name in _required_metric_names(solver) if metrics.get(name) is None]
+    if metrics.get("SELF_INTERSECTING", False):
+        return "fail", "self_intersecting", missing_metrics
+    if missing_metrics:
+        return "fail", "incomplete_metrics", missing_metrics
+    if metrics.get("OPTIMIZER_SUCCESS") is False:
+        return "fail", "optimizer_unsuccessful", missing_metrics
+    if score == 0.0:
+        return "fail", "zero_score", missing_metrics
+    return "pass", "ok", missing_metrics
 
 
 def _count_concurrent_runs() -> int:
@@ -266,22 +309,27 @@ def main() -> None:
     # --- Shared params (both solvers) ---
     parser.add_argument("--cc-weight", type=float, default=100.0)
     parser.add_argument("--cc-threshold", type=float, default=0.05)
-    parser.add_argument("--curvature-weight", type=float, default=0.0001)
+    parser.add_argument("--curvature-weight", type=float, default=0.1)
     parser.add_argument("--curvature-threshold", type=float, default=40.0)
     parser.add_argument("--banana-surf-radius", type=float, default=0.22)
     parser.add_argument("--major-radius", type=float, default=0.915)
-    parser.add_argument("--toroidal-flux", type=float, default=0.215)
+    parser.add_argument("--toroidal-flux", type=float, default=0.24)
     parser.add_argument("--order", type=int, default=2)
     parser.add_argument("--maxiter", type=int, default=400)
-    parser.add_argument("--nphi", type=int, default=127)
-    parser.add_argument("--ntheta", type=int, default=32)
+    parser.add_argument("--nphi", type=int, default=255)
+    parser.add_argument("--ntheta", type=int, default=64)
+    parser.add_argument("--maxcor", type=int, default=300,
+                        help="L-BFGS-B memory (number of corrections).")
+    parser.add_argument("--boozer-stage", choices=["initial", "final"],
+                        default="initial",
+                        help="Boozer residual mode: LS (initial) or exact (final).")
 
     # --- Stage 2 only ---
     parser.add_argument(
         "--length-weight",
         type=float,
-        default=0.0005,
-        help="Stage 2: curve length penalty weight.",
+        default=1.0,
+        help="Curve length penalty weight (solver default 1 for single-stage, 0.0005 for stage2).",
     )
     parser.add_argument("--length-target", type=float, default=1.75)
     parser.add_argument("--theta-center", type=float, default=0.5)
@@ -342,6 +390,18 @@ def main() -> None:
         default=0,
         help="Single-stage: run topology confinement scoring every N accepted iterations (0 = disabled). Writes topology_archive.jsonl.",
     )
+    parser.add_argument(
+        "--topology-scorer-nfieldlines",
+        type=int,
+        default=12,
+        help="Single-stage: number of field lines for topology scorer (default 12).",
+    )
+    parser.add_argument(
+        "--topology-scorer-tmax",
+        type=float,
+        default=50.0,
+        help="Single-stage: integration horizon for topology scorer (default 50.0).",
+    )
 
     # --- Single-stage only ---
     parser.add_argument("--iota-target", type=float, default=0.15)
@@ -396,12 +456,6 @@ def main() -> None:
         type=float,
         default=1.0,
         help="Single-stage: curve length weight.",
-    )
-    parser.add_argument(
-        "--maxcor", type=int, default=300, help="Single-stage: L-BFGS-B memory."
-    )
-    parser.add_argument(
-        "--boozer-stage", choices=["initial", "final"], default="initial"
     )
     parser.add_argument("--num-tf-coils", type=int, default=20)
     # Stage 2 seed for single-stage
@@ -543,7 +597,19 @@ def _run_experiment(args: argparse.Namespace) -> None:
         git_meta = _get_git_metadata(_alm_default_root)
     else:
         cmd_prefix, solver_script, git_meta = _resolve_solver(args)
-    plasma_surf = EQUILIBRIUM_FILES.get(args.equilibrium, args.equilibrium)
+    plasma_surf = EQUILIBRIUM_FILES.get(args.equilibrium)
+    if plasma_surf is None:
+        # Not a known shorthand — treat as a raw filename but verify it exists
+        plasma_surf = args.equilibrium
+        eq_path = os.path.join(str(EQUILIBRIA), plasma_surf)
+        if not os.path.exists(eq_path) and not os.path.exists(plasma_surf):
+            print(
+                f"ERROR: unknown equilibrium '{args.equilibrium}'. "
+                f"Use nfp{{N}}_iota{{XX}} (e.g. nfp5_iota17, nfp10_iota25) "
+                f"or a valid filename.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Validate iota-target against equilibrium axis iota
     if args.solver == "single-stage":
@@ -560,10 +626,10 @@ def _run_experiment(args: argparse.Namespace) -> None:
     if args.curvature_threshold > 40:
         print(
             f"ERROR: --curvature-threshold {args.curvature_threshold} exceeds "
-            f"HBT fabrication limit of 40. Clamping to 40.",
+            f"HBT fabrication limit of 40. Refusing to run.",
             file=sys.stderr,
         )
-        args.curvature_threshold = 40
+        sys.exit(1)
 
     # Build CLI args for the solver
     cli_args = _build_cli_args(args, plasma_surf)
@@ -676,18 +742,23 @@ def _run_experiment(args: argparse.Namespace) -> None:
     with open(results_files[0]) as f:
         metrics = json.load(f)
 
-    # Score based on solver
+    # Score based on solver — formulas differ, scores are NOT comparable across solvers.
     if args.solver == "stage2":
         score = score_stage2(metrics, args)
+        score_formula = "stage2"
     else:
         score = score_single_stage(metrics, args)
+        score_formula = "single-stage"
+    status, status_reason, missing_metrics = _classify_completed_run(metrics, args.solver, score)
 
     output = {
         "source": "local",
         "solver": args.solver,
         "equilibrium": args.equilibrium,
-        "status": "fail" if metrics.get("SELF_INTERSECTING", False) else "pass",
+        "status": status,
+        "status_reason": status_reason,
         "score": round(score, 6),
+        "score_formula": score_formula,
         "field_error": metrics.get("FIELD_ERROR"),
         "self_intersecting": metrics.get("SELF_INTERSECTING", False),
         "max_curvature": metrics.get("MAX_CURVATURE"),
@@ -698,6 +769,8 @@ def _run_experiment(args: argparse.Namespace) -> None:
         "solver_branch": git_meta.get("solver_branch"),
         "params": _extract_params(args),
     }
+    if missing_metrics:
+        output["missing_metrics"] = missing_metrics
 
     # Solver objective and physics metrics (new — available when solver writes them)
     output["objective_J"] = metrics.get("OBJECTIVE_J")
@@ -982,6 +1055,10 @@ def _build_cli_args(args: argparse.Namespace, plasma_surf: str) -> list[str]:
             cli += ["--checkpoint-every", str(args.checkpoint_every)]
         if args.topology_scorer_every > 0:
             cli += ["--topology-scorer-every", str(args.topology_scorer_every)]
+            if args.topology_scorer_nfieldlines != 12:
+                cli += ["--topology-scorer-nfieldlines", str(args.topology_scorer_nfieldlines)]
+            if args.topology_scorer_tmax != 50.0:
+                cli += ["--topology-scorer-tmax", str(args.topology_scorer_tmax)]
         if args.alm:
             cli += [
                 "--alm",
@@ -1045,6 +1122,8 @@ def _extract_params(args: argparse.Namespace) -> dict:
                 "boozer_stage": args.boozer_stage,
                 "checkpoint_every": args.checkpoint_every,
                 "topology_scorer_every": args.topology_scorer_every,
+                "topology_scorer_nfieldlines": args.topology_scorer_nfieldlines,
+                "topology_scorer_tmax": args.topology_scorer_tmax,
                 "alm": args.alm,
             }
         )
@@ -1135,7 +1214,9 @@ def _emit_error(reason: str, elapsed: float, args: argparse.Namespace,
         "solver": args.solver,
         "equilibrium": args.equilibrium,
         "status": "crash",
+        "status_reason": "crash",
         "score": 0.0,
+        "score_formula": args.solver,
         "field_error": None,
         "self_intersecting": None,
         "max_curvature": None,
