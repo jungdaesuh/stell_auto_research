@@ -37,12 +37,39 @@ JSONL_PATH = REPO_ROOT / "results.jsonl"
 OUTPUT_BASE = Path("/tmp/stellarator_harness")
 
 # ---------------------------------------------------------------------------
-# Configuration — edit these paths for your environment
+# Configuration — set via environment variables or .env file
+# See .env.sample for required variables.
 # ---------------------------------------------------------------------------
 
-EQUILIBRIA_DIR = Path(
-    os.environ.get("EQUILIBRIA_DIR", "/Users/suhjungdae/code/columbia/DATABASE/EQUILIBRIA")
-)
+def _require_env(name: str) -> str:
+    val = os.environ.get(name)
+    if not val:
+        print(
+            f"ERROR: {name} not set. Copy .env.sample to .env and fill in your paths.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return val
+
+
+def _load_env() -> None:
+    """Load .env file if present (simple key=value, no shell expansion)."""
+    env_file = REPO_ROOT / ".env"
+    if not env_file.exists():
+        return
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip())
+
+
+_load_env()
+
+EQUILIBRIA_DIR = Path(_require_env("EQUILIBRIA_DIR"))
 STAGE2_SEED_STORE = REPO_ROOT / "stage2_seeds"
 POINCARE_FIELD_ERROR_THRESHOLD = 0.1
 POINCARE_SURVIVAL_THRESHOLD = 0.9
@@ -51,13 +78,8 @@ SOLVERS = {
     "banana": {
         "stage2": "examples/single_stage_optimization/STAGE_2/banana_coil_solver.py",
         "single-stage": "examples/single_stage_optimization/SINGLE_STAGE/single_stage_banana_example.py",
-        "default_root": Path(os.environ.get(
-            "SIMSOPT_ROOT", "/Users/suhjungdae/code/hbt-compare/wt/candidate-fixed"
-        )),
-        "default_python": os.environ.get(
-            "SIMSOPT_PYTHON",
-            "/opt/homebrew/Caskroom/miniforge/base/envs/columbia-jax-0.9.2/bin/python",
-        ),
+        "default_root": Path(_require_env("SIMSOPT_ROOT")),
+        "default_python": _require_env("SIMSOPT_PYTHON"),
     },
 }
 

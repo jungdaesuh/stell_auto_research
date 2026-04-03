@@ -8,24 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
-worktrees/
-results/
-queue/
-
-# Agent prompt files (generated per-session by launchers)
-CLAUDE.md
-AGENTS.md
-
-# Experimental code/artifacts
-dev/
 
 # Results and runtime data
 results.tsv
 results.jsonl
 results_*.jsonl
+results.db
+results.db-shm
+results.db-wal
 stage2_seeds/
-single_stage_results/
 *.sqlite
 
-# AWS state
-/tmp/hbt_autoresearch/
+# Environment (machine-specific paths)
+.env
