@@ -159,7 +159,6 @@ results.jsonl                       ← append-only source of truth (created by 
 results.db                          ← derived query index (created by run.py)
 scripts/aws_run.py                  ← stays (infra, not harness)
 scripts/generate_equilibria.py      ← stays (run once, not part of loop)
-prepare.py, train.py                ← Karpathy originals, not part of stellarator harness
 ```
 
 ## Risks

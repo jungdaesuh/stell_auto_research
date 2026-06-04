@@ -137,10 +137,4 @@ LESSONS.md                 ← append-only research memory
 results.db                 ← SQLite database (created on first run)
 results.jsonl              ← append-only JSON log (created on first run)
 PLAN.md                    ← design rationale
-
-# Karpathy originals (LLM training — independent of stellarator harness)
-program.md                 ← LLM agent instructions
-prepare.py                 ← LLM data prep and eval
-train.py                   ← LLM training code
-analysis.ipynb             ← LLM experiment analysis
 ```
