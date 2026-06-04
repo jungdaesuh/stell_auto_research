@@ -12,11 +12,26 @@ run.py                    ← run solver, store results (fixed harness)
 results.db                ← experiment database (agent queries with SQL)
 results.jsonl             ← append-only log (human-readable backup)
 schema.sql                ← database schema (applied once)
+LESSONS.md                ← append-only research memory (agent + human)
 ```
 
 The agent reads `program_optimization.md`, queries `results.db` to understand what's been tried, picks parameters, calls `run.py`, evaluates the result, and loops.
 
-## Quick start
+## Quick start (new collaborator)
+
+If you use Claude Code, the fastest path is the bundled setup skill:
+
+```
+/setup-harness
+```
+
+It interviews you (paths, your simsopt fork's layout, campaign goals),
+verifies your solver scripts accept the flags the harness passes, writes
+`.env`, generates your campaign program file from
+`templates/program_template.md`, and ends with a real smoke run. Manual
+setup below works too.
+
+## Quick start (manual)
 
 **Requirements:** SIMSOPT installed, equilibrium files, Python 3.10+.
 
@@ -48,6 +63,17 @@ sqlite3 results.db -header -column \
 | `SIMSOPT_ROOT` | Path to SIMSOPT repository root (contains `examples/single_stage_optimization/`) |
 | `SIMSOPT_PYTHON` | Python interpreter with SIMSOPT and dependencies installed |
 | `EQUILIBRIA_DIR` | Directory containing equilibrium `wout_*.nc` files |
+| `STAGE2_SCRIPT` | *(optional)* Stage 2 solver script, relative to `SIMSOPT_ROOT` |
+| `SINGLE_STAGE_SCRIPT` | *(optional)* single-stage solver script, relative to `SIMSOPT_ROOT` |
+| `POINCARE_SCRIPT` | *(optional)* Poincare validation script, relative to `SIMSOPT_ROOT` |
+| `OUTPUT_BASE` | *(optional)* scratch dir for live solver runs (default `/tmp/stellarator_harness`) |
+| `KEEP_ARTIFACTS` | *(optional)* retention for completed runs' outputs: `none` (default) / `pass` / `all` |
+| `ARTIFACTS_DIR` | *(optional)* where kept run dirs are moved, named by run id (default `<repo>/artifacts`) |
+| `STAGE2_SEED_DIR` | *(optional)* Stage 2 seed archive (default `<repo>/stage2_seeds`) |
+
+The script overrides exist for simsopt forks that keep the solver scripts at
+non-default paths. Crashed runs always leave their dir + `run.log` under
+`OUTPUT_BASE` for debugging, regardless of `KEEP_ARTIFACTS`.
 
 Set these in `.env` (not committed) or export them in your shell.
 
@@ -103,8 +129,11 @@ The schema, dual storage, and query patterns work for any coil type.
 ```
 .env.sample                ← template for environment variables
 schema.sql                 ← database schema (1 table, 28 columns)
-run.py                     ← experiment harness (~680 lines)
-program_optimization.md    ← agent instructions for banana coils
+run.py                     ← experiment harness (~740 lines)
+program_optimization.md    ← agent instructions for banana coils (reference campaign)
+templates/program_template.md  ← skeleton for generating your own campaign program
+LESSONS.md                 ← append-only research memory
+.claude/skills/setup-harness/  ← interactive first-time setup skill
 results.db                 ← SQLite database (created on first run)
 results.jsonl              ← append-only JSON log (created on first run)
 PLAN.md                    ← design rationale

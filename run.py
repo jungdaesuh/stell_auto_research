@@ -34,7 +34,6 @@ REPO_ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = REPO_ROOT / "schema.sql"
 DB_PATH = REPO_ROOT / "results.db"
 JSONL_PATH = REPO_ROOT / "results.jsonl"
-OUTPUT_BASE = Path("/tmp/stellarator_harness")
 
 # ---------------------------------------------------------------------------
 # Configuration — set via environment variables or .env file
@@ -70,14 +69,39 @@ def _load_env() -> None:
 _load_env()
 
 EQUILIBRIA_DIR = Path(_require_env("EQUILIBRIA_DIR"))
-STAGE2_SEED_STORE = REPO_ROOT / "stage2_seeds"
 POINCARE_FIELD_ERROR_THRESHOLD = 0.1
 POINCARE_SURVIVAL_THRESHOLD = 0.9
 
+# --- Artifact & directory layout (optional overrides, see .env.sample) ---
+# OUTPUT_BASE: scratch dir for live solver runs. Crashed runs always leave
+#   their dir + run.log here for debugging.
+# STAGE2_SEED_DIR: archive of Stage 2 seeds that single-stage warm-starts from.
+# KEEP_ARTIFACTS: what to do with a completed run's output dir after ingest —
+#   "none" discards it, "pass" keeps passing runs, "all" keeps every completed
+#   run. Kept dirs are moved to ARTIFACTS_DIR/<run-id>.
+OUTPUT_BASE = Path(os.environ.get("OUTPUT_BASE", "/tmp/stellarator_harness"))
+STAGE2_SEED_STORE = Path(os.environ.get("STAGE2_SEED_DIR", str(REPO_ROOT / "stage2_seeds")))
+ARTIFACTS_DIR = Path(os.environ.get("ARTIFACTS_DIR", str(REPO_ROOT / "artifacts")))
+KEEP_ARTIFACTS = os.environ.get("KEEP_ARTIFACTS", "none")
+if KEEP_ARTIFACTS not in ("none", "pass", "all"):
+    print(
+        f"WARNING: unknown KEEP_ARTIFACTS '{KEEP_ARTIFACTS}', using 'none'",
+        file=sys.stderr,
+    )
+    KEEP_ARTIFACTS = "none"
+
+# Solver script paths are relative to SIMSOPT_ROOT. Override via env when your
+# simsopt fork keeps these scripts elsewhere (see .env.sample).
 SOLVERS = {
     "banana": {
-        "stage2": "examples/single_stage_optimization/STAGE_2/banana_coil_solver.py",
-        "single-stage": "examples/single_stage_optimization/SINGLE_STAGE/single_stage_banana_example.py",
+        "stage2": os.environ.get(
+            "STAGE2_SCRIPT",
+            "examples/single_stage_optimization/STAGE_2/banana_coil_solver.py",
+        ),
+        "single-stage": os.environ.get(
+            "SINGLE_STAGE_SCRIPT",
+            "examples/single_stage_optimization/SINGLE_STAGE/single_stage_banana_example.py",
+        ),
         "default_root": Path(_require_env("SIMSOPT_ROOT")),
         "default_python": _require_env("SIMSOPT_PYTHON"),
     },
@@ -471,9 +495,9 @@ def _run_poincare(run_dir: Path, solver_python: str, solver_root: Path) -> str |
     Field lines that exit the surface have fewer hits. We parse the hit counts
     to compute a survival fraction.
     """
-    poincare_script = (
-        solver_root
-        / "examples/single_stage_optimization/POINCARE_PLOTTING/poincare_surfaces.py"
+    poincare_script = solver_root / os.environ.get(
+        "POINCARE_SCRIPT",
+        "examples/single_stage_optimization/POINCARE_PLOTTING/poincare_surfaces.py",
     )
     if not poincare_script.exists():
         print(f"Poincare script not found: {poincare_script}", file=sys.stderr)
@@ -616,8 +640,19 @@ def _run_experiment(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"WARNING: seed archival failed: {e}", file=sys.stderr)
 
-    # Cleanup tmpdir
-    shutil.rmtree(run_dir, ignore_errors=True)
+    _finalize_run_dir(run_dir, status, record["id"])
+
+
+def _finalize_run_dir(run_dir: Path, status: str, run_id: str) -> None:
+    """Apply KEEP_ARTIFACTS: move the run dir to ARTIFACTS_DIR/<run-id> or discard it."""
+    keep = KEEP_ARTIFACTS == "all" or (KEEP_ARTIFACTS == "pass" and status == "pass")
+    if not keep:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        return
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = ARTIFACTS_DIR / run_id
+    shutil.move(str(run_dir), str(dest))
+    print(f"Artifacts kept: {dest}", file=sys.stderr)
 
 
 def _archive_stage2_seed(run_dir: Path, plasma_surf: str) -> None:
