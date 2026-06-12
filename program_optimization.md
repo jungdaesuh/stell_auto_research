@@ -95,15 +95,16 @@ sqlite3 results.db -header -column "YOUR QUERY"
 
 ```
 runs(
-  id, coil_type, solver, equilibrium,
+  id, coil_type, solver, equilibrium, experiment_group,
   status, status_reason, validated,
   iterations, elapsed, created_at, optimizer_success, termination_message,
   field_error, qs_error, boozer_residual,
   iota_actual, volume_actual,
-  max_curvature, lead_end_curvature, non_lead_end_curvature,
+  max_curvature,
   coil_length, coil_coil_dist, coil_surface_dist, surface_vessel_dist,
   max_force, self_intersecting, objective_J,
-  params  -- JSON, query with json_extract(params, '$.key')
+  metrics,  -- JSON: solver-specific metrics, e.g. json_extract(metrics, '$.lead_end_curvature')
+  params    -- JSON: run params, e.g. json_extract(params, '$.cc_weight')
 )
 ```
 

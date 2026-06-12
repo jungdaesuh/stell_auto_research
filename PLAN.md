@@ -29,9 +29,9 @@ One `schema.sql`, applied once on init. No migration system — if a column is n
 
 Columns derived from real stellarator solver output fields. Nothing invented.
 
-One table. One row per experiment. Params as a JSON column on the same row.
+One table. One row per experiment (or per sub-step, grouped by `experiment_group`). Params and solver-specific metrics as JSON columns on the same row.
 
-See `schema.sql` (SSOT). Summary: 28 columns — 4 identity, 8 outcome, 15 physics outputs, 1 JSON params.
+See `schema.sql` (SSOT). Summary: 28 columns — 5 identity, 8 outcome, 13 physics outputs, 2 JSON (metrics + params).
 
 ### No scoring
 
