@@ -1,151 +1,180 @@
 ---
 name: setup-harness
-description: Interactive first-time setup of the autoresearch harness for a new user's simsopt fork — writes .env, generates a campaign program file from the template, scaffolds lessons memory, and smoke-tests the full pipeline. Use when a new collaborator clones this repo, or to re-generate the program file for a new campaign.
+description: Interactive first-time setup of the autoresearch harness for the user's own optimizer (simsopt, DESC, or any other). Detects their solver stack, installs missing dependencies, generates a solver adapter + campaign program file, and ends with a real run. Use when a collaborator clones this repo, when wiring the harness to a new solver, or to regenerate the program file for a new campaign.
 ---
 
 # setup-harness
 
-Bootstrap this autoresearch harness against the user's own simsopt fork and
-research campaign. The outcome is the four-piece system: **program file**
-(agent system prompt) + **run.py** (solver runner) + **results.db/jsonl**
-(experiment database) + **LESSONS.md** (research memory), all verified by a
-real smoke run.
+Get a first-time user from a fresh clone to a running experiment loop against
+**their own optimizer**. The harness does not do the physics — the user owns
+that. It runs their parameter scans, records every run (and every failure) in a
+queryable SQLite DB, and keeps an append-only `LESSONS.md`. Your job here is to
+wire it to their solver and prove it runs.
 
-Run the phases in order. Do not skip verification.
+The end state is five pieces, all verified by a real run:
+**adapter** (`adapter.py` → `adapters/<solver>.py`, the solver-specific glue) +
+**program file** (`program_<slug>.md`, the agent's instructions) + **run.py**
+(generic runner, untouched) + **results.db/jsonl** (experiment DB) +
+**LESSONS.md** (research memory).
 
-## Phase 1 — Preflight
+Run the phases in order. Be concrete, verify every step, and do not declare
+done on a red smoke run. The user may be new to autoresearch and skeptical that
+an LLM helps with their optimization — keep the walkthrough practical and
+honest; the value you deliver is a working runner + bookkeeping, not physics.
 
-1. If `.env` already exists, read it and treat its values as defaults to
-   confirm rather than ask from scratch. Tell the user setup has run before.
-2. Read `run.py` (top ~120 lines) to know the current env contract and
-   default solver script paths.
-3. Read `templates/program_template.md` — you will fill it in Phase 4.
+## Phase 1 — Preflight: learn the contract
 
-## Phase 2 — Interview
+Read these before asking anything:
+1. `contract.py` — the harness↔adapter contract. This is the interface the
+   generated adapter must implement (`NAME`, `SOLVER_MODES`, `ENV_REQUIREMENTS`,
+   `add_arguments`, `run_experiment`) and the `ExperimentOutcome` it returns.
+2. `run.py` — the generic core: how it calls the adapter, the CLI skeleton, the
+   env/artifact layout (`OUTPUT_BASE` / `KEEP_ARTIFACTS` / `ARTIFACTS_DIR`), and
+   `COLUMN_METRIC_KEYS` (the canonical metric keys that get their own DB column;
+   everything else an adapter emits lands in the `metrics` JSON overflow).
+3. `adapters/simsopt_banana.py` — the **reference adapter**: a complete worked
+   example of the contract. You will model the generated adapter on this.
+4. `templates/program_template.md` — the program-file skeleton you fill later.
 
-Use AskUserQuestion in small rounds. Prefer detected/confirmable defaults
-over open questions. Required facts:
+Do not read or write dotenv files; the harness is configured from exported
+environment variables.
 
-**Round A — paths (environment):**
-- `SIMSOPT_ROOT`: path to their simsopt repo root.
-- `SIMSOPT_PYTHON`: python interpreter with simsopt installed.
-- `EQUILIBRIA_DIR`: directory holding their `wout_*.nc` files.
+## Phase 2 — Identify the solver stack
 
-After getting paths, **verify each one immediately** (dir exists, python
-runs `-c "import simsopt"`, equilibria dir contains `wout_*.nc`). If a check
-fails, say what failed and re-ask — do not proceed on broken paths.
+Ask the user (AskUserQuestion, with detected defaults where possible):
+- **Which optimizer** do they run — simsopt, DESC, or something else?
+- **Where it lives**: the solver repo root, and the Python interpreter that has
+  it installed (often a conda/venv distinct from this repo's env).
+- **Target configurations**: the directory holding the inputs each experiment
+  optimizes against (simsopt: `wout_*.nc` equilibria; DESC: base cases / `.h5`).
 
-**Round B — solver layout:**
-- Check whether the default script paths exist under their `SIMSOPT_ROOT`:
-  - `examples/single_stage_optimization/STAGE_2/banana_coil_solver.py`
-  - `examples/single_stage_optimization/SINGLE_STAGE/single_stage_banana_example.py`
-  - `examples/single_stage_optimization/POINCARE_PLOTTING/poincare_surfaces.py`
-- If any is missing, search their repo for the actual locations (Glob for
-  the filenames, then plausible variants) and confirm with the user. Record
-  non-default paths as `STAGE2_SCRIPT` / `SINGLE_STAGE_SCRIPT` /
-  `POINCARE_SCRIPT` overrides (relative to `SIMSOPT_ROOT`).
+Verify each path immediately (dir exists; interpreter runs). If the user's
+optimizer **is** the banana/simsopt reference, the shipped `adapter.py` already
+works — confirm, skip adapter generation (Phase 6's adapter step), and just do
+dependency check + campaign identity + program generation + smoke. Otherwise you
+will generate a new adapter for their solver.
 
-**Round C — campaign identity (free-text, the user's physics, not yours):**
-- Campaign title and 2–5 sentence mission.
-- Success metric: the one measurable claim that defines success.
-- Hard invariants: hardware limits, conventions, ceilings (offer "none yet —
-  fill in later" as a valid answer). Remind the user these remove agent
-  freedom — keep them to real physical/hardware limits.
-- Constraint floors (curvature threshold, coil-coil distance, length target,
-  etc.) — offer the run.py defaults as the baseline.
+## Phase 3 — Dependencies (hard gate before introspection)
 
-**Round D — execution policy:**
-- Typical timeout and `--omp-threads` for this machine.
-- Autonomy: "never stop" loop vs bounded sessions.
+A solver whose imports fail produces confusing crashes later, so resolve this
+first:
+1. Probe the chosen interpreter for the framework and its key deps:
+   `<python> -c "import simsopt"` / `"import desc"` (DESC also pulls `jax`).
+2. If anything is missing, **guide the install** — do not silently run a heavy
+   install:
+   - Detect the user's package manager (uv / pip / conda) from their env.
+   - For framework install commands, fetch **current** instructions rather than
+     guessing — use the `find-docs` skill or `ctx7` (DESC + jax versions and
+     CPU/GPU extras drift, and a wrong jax build is a classic silent failure).
+   - Show the exact command, get confirmation, run it, then **re-verify the
+     import**. No silent fallback.
+3. Do not proceed to introspection until every required import succeeds.
 
-**Round E — artifacts & directory layout:**
-- `OUTPUT_BASE`: scratch dir for live solver runs (default
-  `/tmp/stellarator_harness`). Crashed runs always leave their dir +
-  `run.log` here for debugging.
-- `KEEP_ARTIFACTS`: retention for completed runs' solver outputs (plots,
-  coil JSONs, surfaces) — `none` (discard after ingest, default), `pass`
-  (keep passing runs), `all` (keep every completed run). Recommend `pass`
-  for a new campaign: champions stay reproducible without unbounded disk
-  growth.
-- `ARTIFACTS_DIR`: where kept run dirs land, named by run id so they join
-  back to `results.db` (default `<repo>/artifacts`).
-- `STAGE2_SEED_DIR`: Stage 2 seed archive that single-stage warm-starts
-  from (default `<repo>/stage2_seeds`).
-- Ask whether results (`results.db`/`results.jsonl`) staying at the repo
-  root is fine — they always live there; if the user wants them elsewhere,
-  suggest symlinking the repo onto the larger volume rather than patching
-  run.py.
-- Estimate disk: one kept run dir is typically O(1-50 MB); with `all` and
-  hundreds of runs per day this adds up — say so when they pick `all`.
+## Phase 4 — Understand the solver & sketch the adapter
 
-## Phase 3 — Introspect their solver
+You are about to write an adapter; learn the solver's shape first.
+1. **How is one experiment invoked?** A single script/subprocess (like banana's
+   stage2), or a **chained pipeline** of several steps where each step's output
+   feeds the next? (DESC umbilic, e.g., is a 4-step chain per parameter set:
+   build a bumped plasma surface → solve the fixed-boundary equilibrium → stage-2
+   coil optimization → free-boundary equilibrium seeded from the earlier solve.)
+2. **Inputs/params** the agent should be able to set (grep the solver's argparse
+   or function signatures). These become `add_arguments` flags.
+3. **Outputs**: what does a run produce, and where are the metrics — a
+   `results.json`, a returned object, stdout? This becomes `run_experiment`'s
+   parsing.
+4. **Metrics → canonical keys**: list the solver's native metric names and map
+   each onto a canonical snake_case key. Keys in `run.py`'s `COLUMN_METRIC_KEYS`
+   get a dedicated column; everything else is preserved in the `metrics` JSON
+   blob (so nothing is lost — no schema change needed).
+5. **Target-configuration resolution**: how a `--equilibrium`/base-case key maps
+   to an actual input file or case.
+6. **Validation / intermediates**: any independent check (field-line tracing,
+   convergence) that should set `validated`, and any expensive intermediate a
+   later step reuses.
 
-The harness passes a fixed set of flags (see `_build_cli` in `run.py`).
-Their fork's argparse may differ. Detect drift **before** the smoke run:
+## Phase 5 — Campaign identity & setup decisions (interview)
 
-1. Grep `add_argument` in their stage2 and single-stage scripts.
-2. Diff against **every** flag run.py passes at launch: the per-solver flags
-   `_build_cli` emits, plus `--output-root` which `_run_experiment` appends
-   to both solvers (run.py scrapes `results.json` from that dir — a solver
-   that ignores or rejects `--output-root` breaks result ingestion, not
-   just launch).
-3. Report any flag run.py passes that their script does not accept, and any
-   interesting flags their script has that run.py does not pass. Missing
-   flags in their script = the smoke run will crash; tell the user the two
-   options: (a) adapt their script, (b) edit `_build_cli` in run.py to drop
-   the flag for their fork.
+Free-text, the user's physics, not yours. Keep it lean — guardrails remove agent
+freedom; physics findings belong in `LESSONS.md`, not here.
+- **Campaign title** + 2–5 sentence **mission**.
+- **Success metric**: the one measurable claim that defines success, and how it
+  is verified.
+- **Hard invariants**: hardware limits, sign/convention contracts, ceilings.
+  Offer "none yet" as valid. Remind: every entry removes agent freedom — keep to
+  real physical/hardware limits.
+- **Constraint floors**: the buildability limits (offer the adapter's defaults
+  as baseline).
+- **Execution policy**: timeout and thread count for this machine; autonomy
+  ("never stop" loop vs bounded sessions).
+- **Artifact layout**: `OUTPUT_BASE` (scratch; crashed runs leave dir + run.log
+  here), `KEEP_ARTIFACTS` (`none`/`pass`/`all`; recommend `pass`), `ARTIFACTS_DIR`,
+  and any solver-specific seed/intermediate store the adapter needs.
+- **Experiment granularity (multi-step pipelines only)**: ask whether one
+  experiment should be **one DB row** (simplest — one row per full pipeline run)
+  or **one row per sub-step** (more plumbing, but lets the agent reuse an
+  expensive intermediate — e.g. a solved equilibrium — across downstream scans).
+  Per-step uses the `experiment_group` column to tie a parameter set's rows back
+  together, plus an archival hook to thread the intermediate forward. Default to
+  one-row-per-chain unless they want the reuse.
 
-Also scan `EQUILIBRIA_DIR`: list the `wout_*.nc` files. If netCDF reading is
-available via their python, extract NFP/iota-profile basics for the
-equilibria table; otherwise just list filenames. Note: `--equilibrium`
-accepts a raw filename present in `EQUILIBRIA_DIR`, so their files work
-without touching the registry in run.py.
+## Phase 6 — Generate
 
-## Phase 4 — Generate
+1. **Adapter** (`adapters/<solver-slug>.py`) — implement the `contract.py`
+   interface, modeling `adapters/simsopt_banana.py`:
+   - `NAME`, `SOLVER_MODES` (the `--solver` choices; a single-shot solver has
+     one mode, a pipeline may expose several), `ENV_REQUIREMENTS`.
+   - `add_arguments(parser)` — register `--equilibrium` plus every solver param
+     the agent may set, with the solver's real defaults. Only flags the solver
+     actually supports.
+   - `run_experiment(args, run_dir)` — run one experiment end-to-end (one
+     subprocess, or the full chain), parse outputs, map metrics → canonical keys,
+     classify pass/fail, run any validation, archive any reusable intermediate,
+     and return an `ExperimentOutcome`. Must not raise on solver failure — return
+     a `crash`/`fail` outcome (the core catches truly-unexpected exceptions).
+     For per-step granularity, emit one outcome per step with `experiment_group`.
+   - Read config via `require_env` from `contract.py` (fail-fast at import).
+   - Point `adapter.py`'s re-export at the new module.
+2. **Environment exports** — shell `export` commands from the interview: the
+   solver root, interpreter, config dir, and any non-default artifact-layout
+   values. Omit anything left at default.
+3. **`program_<campaign-slug>.md`** — fill every `{{PLACEHOLDER}}` in
+   `templates/program_template.md` from the interview + introspection:
+   parameter table (only real flags), target-configuration table, artifact
+   layout, success metric, hard invariants, constraint floors. Leave deferred
+   sections as short "TODO — fill in as lessons accumulate" notes; do not invent
+   physics. Remove all template HTML comments from the generated file.
+4. **`LESSONS.md`** — shipped with the repo; do not overwrite. If missing,
+   restore the scaffold from git.
 
-1. **`.env`** — write from the interview answers (never commit it; it is the
-   machine-specific config). Include the Round E layout values; omit any the
-   user left at default so the file stays minimal.
-2. **`program_<campaign-slug>.md`** — fill every `{{PLACEHOLDER}}` in
-   `templates/program_template.md` with interview + introspection results:
-   - `{{PARAMETER_TABLE}}`: only flags their solver actually supports.
-   - `{{EQUILIBRIA_TABLE}}`: from the Phase 3 scan.
-   - `{{ARTIFACT_LAYOUT}}`: the Round E answers as a table — scratch dir,
-     retention policy, artifacts dir, seed store — so the agent knows where
-     to find champion outputs and seeds without reading `.env`.
-   - Leave explicitly-deferred sections as short "TODO — fill in as lessons
-     accumulate" notes rather than inventing physics.
-   Remove all template HTML comments from the generated file.
+## Phase 7 — Verify (must end green)
 
-   Keep generated guidance lean: the template's fixed sections are the
-   harness contract; the placeholders carry the user's facts. Don't pad
-   them with strategy advice — physics findings accumulate in `LESSONS.md`.
-3. **`LESSONS.md`** — already shipped with the repo; do not overwrite. If
-   missing, restore the scaffold from git.
+1. Run one tiny experiment through `run.py` with the env exports active and the
+   smallest meaningful settings (low iterations/resolution, short timeout).
+   Expect a single JSON line with a `"status"` and a new row in both
+   `results.jsonl` and `results.db`.
+2. If it crashes, read the run log (path printed in stderr / under
+   `OUTPUT_BASE`), diagnose (usually a missing dep, an adapter↔solver flag
+   mismatch, target-config resolution, or a broken pipeline step), fix, re-run.
+   Do not declare setup done with a failing smoke run.
+3. For a chained pipeline, run one reduced-resolution full parameter set to prove
+   every step and the artifact hand-offs work end-to-end.
+4. Leave smoke rows in the DB by default — they are honest history; clean up only
+   if the user asks.
 
-## Phase 5 — Verify (must end green)
+## Phase 8 — Report & how to run
 
-1. Smoke Stage 2: `python run.py --equilibrium <one-of-their-wout-files>
-   --maxiter 20 --timeout 300`. Expect a JSON line with `"status"` and a new
-   row in `results.jsonl` and `results.db`.
-2. If it crashes, read the run log (path printed in stderr / tmpdir),
-   diagnose (usually flag drift from Phase 3 or equilibrium resolution), fix,
-   and re-run. Do not declare setup done with a failing smoke run.
-3. Optional (ask the user — it is slow): micro single-stage seeded from the
-   smoke output (`--solver single-stage --maxiter 20 --mpol 2 --ntor 2
-   --timeout 600`) to prove the Stage 2 → single-stage handoff.
-4. Clean up smoke rows only if the user asks; by default leave them — they
-   are honest history.
-
-## Phase 6 — Report
-
-Print a short summary:
-- What was written (`.env`, `program_<slug>.md`).
-- Detected flag drift and what was done about it.
-- The first real launch command.
-- How to start the loop: "Read `program_<slug>.md`, then start the
+Print a short, practical summary:
+- The adapter written (`adapters/<slug>.py`) and that `adapter.py` now points at
+  it; the program file (`program_<slug>.md`).
+- The environment variables that must be exported before running, as a copy-paste
+  block.
+- Any adapter↔solver flag drift found and how it was resolved.
+- **The first real launch command**, e.g.
+  `python run.py --solver <mode> --equilibrium <case> [params]`.
+- **How to start the loop**: "Read `program_<slug>.md`, then start the
   optimization loop."
-- Remind: `LESSONS.md` is append-only memory; the program file is the
-  contract; re-run `/setup-harness` to regenerate the program for a new
-  campaign (it will not overwrite the old program file — generate under a
-  new slug).
+- Reminders: `LESSONS.md` is append-only memory; the program file is the
+  contract; query results with `sqlite3 results.db`; re-run `/setup-harness` for
+  a new campaign or solver (it generates under a new slug / adapter rather than
+  overwriting).

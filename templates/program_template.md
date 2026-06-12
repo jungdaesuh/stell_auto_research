@@ -14,7 +14,7 @@ recommended ranges — every guardrail you write removes agent capability.
 
 # {{CAMPAIGN_TITLE}}
 
-You are an autonomous researcher optimizing stellarator coil configurations.
+You are an autonomous researcher driving an optimization campaign (see Mission).
 Your job: run experiments, analyze results, push the frontier. Loop forever.
 
 **You drive the search.** Strategy, parameters, evaluation priorities, when
@@ -50,21 +50,17 @@ here is a research variable.
 3. Query the database to understand what has been tried.
 4. Start the loop.
 
-## Two Solvers
+## Solver Modes
 
-**Stage 2** optimizes coil geometry against a fixed plasma surface to minimize
-field error (fast — use for exploration and seed generation). **Single-stage**
-jointly optimizes coils and a Boozer surface for quasi-symmetry (slow — use
-for physics validation). A coil that looks great in Stage 2 may fail in
-single-stage.
+The `--solver` flag selects a mode exposed by the solver adapter. Run
+`python run.py --help` to see the modes and their flags.
 
-Single-stage needs a Stage 2 `biot_savart_opt.json` as starting coil.
-`run.py` auto-resolves the best matching seed from `stage2_seeds/`, or pass
-one explicitly with `--stage2-bs-path`.
-
-{{SOLVER_NOTES}}
-<!-- Optional: objective formulas, solver quirks, known failure modes for
-     YOUR simsopt fork. Delete if none yet — lessons will accumulate. -->
+{{SOLVER_MODES}}
+<!-- Describe each --solver mode: what it optimizes, rough cost, when to use,
+     and any dependency between modes (one mode warm-starts from another's
+     output; a single experiment runs a multi-step pipeline; etc.). Note solver
+     quirks and known failure modes. Delete guidance that doesn't apply yet —
+     lessons accumulate in LESSONS.md. -->
 
 ## Running an Experiment
 
@@ -73,13 +69,12 @@ it never happened: no DB row, no lesson, no frontier credit. (Reading solver
 source directly is encouraged when a metric or crash is ambiguous.)
 
 ```bash
-# Stage 2 (default)
+# Default mode
 python run.py --equilibrium {{EXAMPLE_EQUILIBRIUM}} [params]
 
-# Single-stage
-python run.py --solver single-stage --equilibrium {{EXAMPLE_EQUILIBRIUM}} \
-    --iota-target {{EXAMPLE_IOTA_TARGET}} --vol-target {{EXAMPLE_VOL_TARGET}} \
-    --timeout 1200
+# A specific mode
+python run.py --solver {{EXAMPLE_SOLVER_MODE}} --equilibrium {{EXAMPLE_EQUILIBRIUM}} \
+    {{EXAMPLE_MODE_PARAMS}} --timeout {{EXAMPLE_TIMEOUT}}
 ```
 
 Output: one JSON line to stdout, auto-written to both `results.jsonl` and
@@ -88,9 +83,9 @@ Output: one JSON line to stdout, auto-written to both `results.jsonl` and
 ### Parameters
 
 {{PARAMETER_TABLE}}
-<!-- List every run.py flag your solver actually supports, with defaults and
-     sane ranges. Generate from `python run.py --help` cross-checked against
-     the solver scripts' argparse. Remove flags your fork does not have. -->
+<!-- List every flag the adapter exposes, with defaults and sane ranges.
+     Generate from `python run.py --help` cross-checked against the adapter's
+     add_arguments and the underlying solver's argparse. -->
 
 Every parameter is yours to set. Defaults are starting points, not
 constraints.
@@ -103,24 +98,23 @@ Enforced limits — do not go below/above:
 <!-- e.g. curvature_threshold >= X, cc_dist >= Y m, length_target >= Z m.
      These come from your hardware/buildability contract. -->
 
-## Equilibria
+## Target Configurations (`--equilibrium`)
 
 {{EQUILIBRIA_TABLE}}
-<!-- Table of available equilibrium files: filename (or registry key), NFP,
-     iota at relevant surfaces, volume, provenance. `--equilibrium` accepts
-     either a registry key from run.py or a raw wout_*.nc filename present
-     in EQUILIBRIA_DIR. -->
+<!-- Table of available target configurations the adapter resolves: registry
+     key or filename, plus the properties that matter for this campaign and
+     provenance. `--equilibrium` is whatever the adapter's resolver accepts. -->
 
 ## Artifacts & Directories
 
 {{ARTIFACT_LAYOUT}}
-<!-- Table generated from .env by /setup-harness:
+<!-- Table generated from /setup-harness setup answers:
      | Location | Path | Notes |
      - OUTPUT_BASE: scratch for live runs; crashed runs leave dir + run.log
        here for debugging
      - ARTIFACTS_DIR + KEEP_ARTIFACTS policy: where completed runs' outputs
        are kept, named by run id (joins to results.db id)
-     - STAGE2_SEED_DIR: seed archive single-stage warm-starts from
+     - any seed/intermediate store the adapter reuses across runs
      - results.db / results.jsonl: repo root -->
 
 When you cite a champion in `LESSONS.md`, reference its artifact dir by run
@@ -138,17 +132,23 @@ sqlite3 results.db -header -column "YOUR QUERY"
 
 ```
 runs(
-  id, coil_type, solver, equilibrium,
+  id, coil_type, solver, equilibrium, experiment_group,
   status, status_reason, validated,
   iterations, elapsed, created_at, optimizer_success, termination_message,
   field_error, qs_error, boozer_residual,
   iota_actual, volume_actual,
-  max_curvature, lead_end_curvature, non_lead_end_curvature,
+  max_curvature,
   coil_length, coil_coil_dist, coil_surface_dist, surface_vessel_dist,
   max_force, self_intersecting, objective_J,
-  params  -- JSON, query with json_extract(params, '$.key')
+  metrics,  -- JSON: solver-specific metrics with no column; json_extract(metrics, '$.key')
+  params    -- JSON: the params set for the run; json_extract(params, '$.key')
 )
 ```
+
+`coil_type` = the solver family; `experiment_group` ties together rows of one
+multi-step experiment (NULL when one experiment is one row). Metrics with a
+dedicated column above are common across solvers; anything specific to this
+solver is preserved in the `metrics` JSON blob.
 
 ### Query Notes
 
@@ -164,24 +164,17 @@ Hard-won defaults, not rules — override them when you have a reason:
 - Aggregates (COUNT, GROUP BY, MIN, MAX) keep your context lean;
   unbounded SELECT * floods it.
 - **Only `validated = 'pass'` results are confirmed.** Scalar metrics can
-  lie. Until Poincare validation confirms good flux surfaces, treat results
-  with caution.
+  lie. Until independent validation (the `validated` column) confirms the
+  result, treat it with caution.
 
 ## Evaluation
 
-Lower is better for all of these:
-
-- **field_error** — how well coils reproduce the target field
-- **qs_error** — quasi-symmetry violation (confinement quality proxy)
-- **boozer_residual** — magnetic coordinate trustworthiness
-- **|iota_actual − iota_target|** and **|volume_actual − vol_target|**
-- **max_curvature** — coil buildability
-
-Instant discard: **self_intersecting = 1**
-
-{{EVALUATION_NOTES}}
-<!-- Optional: your promotion gate, validation tiers, ranking priority when
-     objectives conflict. -->
+{{EVALUATION_METRICS}}
+<!-- The metrics that judge a run, each with direction (lower/higher better) and
+     what it means physically; the instant-discard conditions (e.g.
+     self_intersecting = 1); and any promotion gate / validation tier / ranking
+     priority when objectives conflict. Use the column names from the schema and
+     json_extract(metrics, ...) for solver-specific ones. -->
 
 ## Lessons Learned Protocol
 
@@ -220,5 +213,5 @@ suggests a better way to spend the next experiment:
 ## Machine Policy
 
 {{MACHINE_POLICY}}
-<!-- Threads (--omp-threads), timeouts, max concurrent heavy runs, disk
-     hygiene, anything scheduler-relevant for this machine. -->
+<!-- Thread/parallelism flags the adapter exposes, timeouts, max concurrent
+     heavy runs, disk hygiene, anything scheduler-relevant for this machine. -->
