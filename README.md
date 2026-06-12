@@ -21,7 +21,7 @@ umbilic-coil pipeline through a different adapter, with no change to the core.
 ```
 program_<campaign>.md     ← agent instructions (you / the setup skill write this)
 run.py                    ← generic runner: runs the adapter, stores results
-adapter.py                ← selects the active solver adapter
+adapter.py                ← selects the active adapter (via $AUTORESEARCH_ADAPTER)
 adapters/<solver>.py      ← solver-specific glue (the only file that knows your solver)
 contract.py               ← the harness↔adapter contract
 results.db                ← experiment database (query with SQL)
@@ -56,7 +56,8 @@ files, and Python 3.10+.
 git clone <repo-url>
 cd autoresearch
 
-# 2. Configure your shell (these are read by the banana adapter)
+# 2. Select the banana adapter and configure it (these are read at startup)
+export AUTORESEARCH_ADAPTER=simsopt_banana
 export SIMSOPT_ROOT=/path/to/your/simsopt
 export SIMSOPT_PYTHON=/path/to/conda/envs/simsopt/bin/python
 export EQUILIBRIA_DIR=/path/to/equilibria
@@ -88,13 +89,14 @@ every solver shares one schema.
 
 ## Environment variables
 
-**Core (read by `run.py`, all optional):**
+**Core:**
 
 | Variable | Description |
 |----------|-------------|
-| `OUTPUT_BASE` | scratch dir for live runs (default `/tmp/stellarator_harness`). Crashed runs leave their dir + `run.log` here for debugging. |
-| `KEEP_ARTIFACTS` | retention for completed runs' outputs: `none` (default) / `pass` / `all`. Kept dirs move to `ARTIFACTS_DIR/<run-id>`. |
-| `ARTIFACTS_DIR` | where kept run dirs land, named by run id (default `<repo>/artifacts`). |
+| `AUTORESEARCH_ADAPTER` | **required** — the adapter module in `adapters/` to load (e.g. `simsopt_banana`). Selects your solver. |
+| `OUTPUT_BASE` | *(optional)* scratch dir for live runs (default `/tmp/stellarator_harness`). Crashed runs leave their dir + `run.log` here for debugging. |
+| `KEEP_ARTIFACTS` | *(optional)* retention for completed runs' outputs: `none` (default) / `pass` / `all`. Kept dirs move to `ARTIFACTS_DIR/<run-id>`. |
+| `ARTIFACTS_DIR` | *(optional)* where kept run dirs land, named by run id (default `<repo>/artifacts`). |
 
 **Adapter-specific (read by the active adapter).** The banana/simsopt adapter
 reads:
@@ -167,7 +169,8 @@ You don't touch `run.py`. Either:
 2. Write `adapters/<your-solver>.py` implementing the `contract.py` interface
    (`NAME`, `SOLVER_MODES`, `ENV_REQUIREMENTS`, `add_arguments`,
    `run_experiment`), using `adapters/simsopt_banana.py` as the worked example,
-   and point `adapter.py` at it.
+   and select it with `export AUTORESEARCH_ADAPTER=<your-solver>` (no edit to
+   `adapter.py` or `run.py`).
 
 `run_experiment` can run a single subprocess or a multi-step pipeline (e.g. a
 DESC chain: bumped surface → fixed-boundary equilibrium → coil optimization →

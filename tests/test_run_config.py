@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 
 _IMPORT_ENV = {
+    # Selects which adapter the core loads.
+    "AUTORESEARCH_ADAPTER": "simsopt_banana",
     # Required by the banana adapter at import.
     "SIMSOPT_ROOT": tempfile.gettempdir(),
     "SIMSOPT_PYTHON": "/usr/bin/python3",
@@ -53,6 +55,14 @@ class TestAdapterEnvOverrides(unittest.TestCase):
 
     def test_seed_store_override(self):
         self.assertEqual(banana.STAGE2_SEED_STORE, Path("/tmp/test_seed_dir"))
+
+
+class TestAdapterSelection(unittest.TestCase):
+    """AUTORESEARCH_ADAPTER selects which adapter the core loads."""
+
+    def test_env_var_selects_the_named_adapter(self):
+        self.assertIs(run.adapter._active, banana)
+        self.assertEqual(run.adapter.NAME, banana.NAME)
 
 
 class TestCoreEnvOverrides(unittest.TestCase):

@@ -49,10 +49,10 @@ Ask the user (AskUserQuestion, with detected defaults where possible):
   optimizes against (simsopt: `wout_*.nc` equilibria; DESC: base cases / `.h5`).
 
 Verify each path immediately (dir exists; interpreter runs). If the user's
-optimizer **is** the banana/simsopt reference, the shipped `adapter.py` already
-works — confirm, skip adapter generation (Phase 6's adapter step), and just do
-dependency check + campaign identity + program generation + smoke. Otherwise you
-will generate a new adapter for their solver.
+optimizer **is** the banana/simsopt reference, no adapter generation is needed —
+set `AUTORESEARCH_ADAPTER=simsopt_banana`, skip Phase 6's adapter step, and just
+do dependency check + campaign identity + program generation + smoke. Otherwise
+you will generate a new adapter for their solver.
 
 ## Phase 3 — Dependencies (hard gate before introspection)
 
@@ -134,8 +134,10 @@ freedom; physics findings belong in `LESSONS.md`, not here.
      a `crash`/`fail` outcome (the core catches truly-unexpected exceptions).
      For per-step granularity, emit one outcome per step with `experiment_group`.
    - Read config via `require_env` from `contract.py` (fail-fast at import).
-   - Point `adapter.py`'s re-export at the new module.
-2. **Environment exports** — shell `export` commands from the interview: the
+   - Do **not** edit `adapter.py` or `run.py` — the adapter is selected by the
+     `AUTORESEARCH_ADAPTER` env var (next step).
+2. **Environment exports** — shell `export` commands from the interview:
+   `AUTORESEARCH_ADAPTER=<your-adapter-module>` (selects the adapter), plus the
    solver root, interpreter, config dir, and any non-default artifact-layout
    values. Omit anything left at default.
 3. **`program_<campaign-slug>.md`** — fill every `{{PLACEHOLDER}}` in
@@ -165,8 +167,8 @@ freedom; physics findings belong in `LESSONS.md`, not here.
 ## Phase 8 — Report & how to run
 
 Print a short, practical summary:
-- The adapter written (`adapters/<slug>.py`) and that `adapter.py` now points at
-  it; the program file (`program_<slug>.md`).
+- The adapter written (`adapters/<slug>.py`), selected via
+  `AUTORESEARCH_ADAPTER`; the program file (`program_<slug>.md`).
 - The environment variables that must be exported before running, as a copy-paste
   block.
 - Any adapter↔solver flag drift found and how it was resolved.
